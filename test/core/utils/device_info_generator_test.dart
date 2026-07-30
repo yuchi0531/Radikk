@@ -39,5 +39,12 @@ void main() {
       expect(int.tryParse(parts[0]), isNotNull);
       expect(parts[1], isNotEmpty);
     });
+
+    test('generateAppVersion should return valid version string', () {
+      final version = DeviceInfoGenerator.generateAppVersion();
+      expect(version, isNotEmpty);
+      // 8.x.x 形式
+      expect(RegExp(r'^8\.\d+\.\d+$').hasMatch(version), isTrue);
+    });
   });
 }

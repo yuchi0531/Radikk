@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../../features/player/player_provider.dart';
 import '../../features/player/player_service.dart';
 
@@ -37,88 +38,119 @@ class MiniPlayer extends ConsumerWidget {
           color: isError ? Colors.red.shade50 : Colors.white,
           child: InkWell(
             onTap: () {
-              Navigator.of(context).pushNamed('/player');
+              GoRouter.of(context).go('/player');
             },
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: isError
-                  ? Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            playerState.errorMessage ?? '再生エラー',
-                            style: TextStyle(
-                              color: Colors.red.shade700,
-                              fontSize: 13,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 20),
-                          onPressed: () {
-                            ref.read(playerProvider.notifier).stop();
-                          },
-                        ),
-                      ],
-                    )
-                  : Row(
-                children: [
-                  // 放送局・番組情報
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          playerState.stationName ?? '放送局',
-                          style: Theme.of(context).textTheme.titleMedium,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        if (playerState.programTitle != null)
-                          Text(
-                            playerState.programTitle!,
-                            style: Theme.of(context).textTheme.bodySmall,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  // 再生/一時停止ボタン
-                  if (isLoading)
-                    const SizedBox(
-                      width: 36,
-                      height: 36,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  else
-                    IconButton(
-                      icon: Icon(
-                        isPlaying ? Icons.pause : Icons.play_arrow,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
-                      onPressed: () {
-                        ref.read(playerProvider.notifier).togglePlayPause();
-                      },
-                    ),
-                  // 停止ボタン
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 20),
-                    onPressed: () {
-                      ref.read(playerProvider.notifier).stop();
-                    },
-                  ),
-                ],
-              ),
+                  ? _buildErrorRow(context, ref, playerState)
+                  : _buildNormalRow(context, ref, playerState, isPlaying, isLoading),
             ),
           ),
         ),
       ),
     );
   }
-}
+
+  Widget _buildErrorRow(
+    BuildContext context,
+    WidgetRef ref,
+    PlayerState playerState,
+  ) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            playerState.errorMessage ?? '再生エラー',
+            style: TextStyle(
+              color: Colors.red.shade700,
+              fontSize: 13,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        const SizedBox(width: 8),
+        // 再試行ボタン（前回の再生を再試行）
+        IconButton(
+          icon: const Icon(Icons.refresh, size: 20),
+          onPressed: () {
+            // 再生中の局があれば再度再生を試行
+            if (playerState.stationId != null) {
+              ref.read(playerProvider.notifier).playLive(
+                    stationId: playerState.stationId!,
+                    stationName: playerState.stationName ?? '',
+                    programTitle: playerState.programTitle,
+                  );
+            }
+          },
+        ),
+        // 停止ボタン
+        IconButton(
+          icon: const Icon(Icons.close, size: 20),
+          onPressed: () {
+            ref.read(playerProvider.notifier).stop();
+          },
+        ),
+      ],
+    );
+  }
+}  Widget _buildNormalRow(
+    BuildContext context,
+    WidgetRef ref,
+    PlayerState playerState,
+    bool isPlaying,
+    bool isLoading,
+  ) {
+    return Row(
+      children: [
+        // 放送局・番組情報
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                playerState.stationName ?? '放送局',
+                style: Theme.of(context).textTheme.titleMedium,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (playerState.programTitle != null)
+                Text(
+                  playerState.programTitle!,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        // 再生/一時停止ボタン
+        if (isLoading)
+          const SizedBox(
+            width: 36,
+            height: 36,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        else
+          IconButton(
+            icon: Icon(
+              isPlaying ? Icons.pause : Icons.play_arrow,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            onPressed: () {
+              ref.read(playerProvider.notifier).togglePlayPause();
+            },
+          ),
+        // 停止ボタン
+        IconButton(
+          icon: const Icon(Icons.close, size: 20),
+          onPressed: () {
+            ref.read(playerProvider.notifier).stop();
+          },
+        ),
+      ],
+    );
+  }

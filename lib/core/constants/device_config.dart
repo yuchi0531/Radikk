@@ -8,9 +8,6 @@ class DeviceConfig {
   /// アプリタイプ（最新）
   static const String appType = 'aSmartPhone8';
 
-  /// アプリバージョン（最新安定）
-  static const String appVersion = '8.4.5';
-
   /// 接続タイプ
   static const String connection = 'wifi';
 

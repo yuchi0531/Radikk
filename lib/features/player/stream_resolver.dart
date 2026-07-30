@@ -35,7 +35,7 @@ class StreamResolver {
     // URLにパラメータを追加
     final separator = playlistCreateUrl.contains('?') ? '&' : '?';
     return '$playlistCreateUrl${separator}station_id=$stationId'
-        '&ft=$fromStr&to=$toStr&l=15';
+        '&ft=$fromStr&to=$toStr&l=300';
   }
 
   String _formatDateTime(DateTime dt) {

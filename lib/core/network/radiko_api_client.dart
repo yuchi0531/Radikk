@@ -12,7 +12,9 @@ class RadikoApiClient {
   /// 放送局一覧を取得（全エリア）
   /// GET https://radiko.jp/v3/station/region/full.xml
   Future<List<Station>> getStations() async {
-    final response = await _dio.apiClient.get(ApiEndpoints.stationRegionFull);
+    final response = await _safeApiCall(() =>
+        _dio.apiClient.get(ApiEndpoints.stationRegionFull));
+
     final document = XmlDocument.parse(response.data.toString());
 
     final stations = <Station>[];
@@ -43,41 +45,26 @@ class RadikoApiClient {
   /// GET https://radiko.jp/v3/station/stream/pc_html5/{stationId}.xml
   Future<String> getPlaylistCreateUrl(String stationId) async {
     final url = '${ApiEndpoints.stationStream}/$stationId.xml';
-    final response = await _dio.apiClient.get(url);
+    final response = await _safeApiCall(() => _dio.apiClient.get(url));
     final document = XmlDocument.parse(response.data.toString());
 
-    final urlElement = document.findAllElements('playlist_create_url').firstOrNull;
+    final urlElement =
+        document.findAllElements('playlist_create_url').firstOrNull;
     if (urlElement == null) {
       throw Exception('playlist_create_url が見つかりません: $stationId');
     }
     return urlElement.innerText.trim();
   }
 
-  /// m3u8 プレイリストを取得
-  /// playlist_create_url に対してGET。認証ヘッダー付き
-  Future<String> getM3u8Playlist(String playlistUrl, String authToken) async {
-    // playlistUrl はフルURLなので、baseUrlではなく直接GET
-    final dio = Dio(BaseOptions(
-      headers: {
-        'X-Radiko-AuthToken': authToken,
-      },
-      connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 30),
-    ));
-
-    final response = await dio.get(playlistUrl);
-    return response.data.toString();
-  }
-
   /// 日別番組表を取得
   /// GET https://api.radiko.jp/program/v4/date/{YYYYMMDD}/station/{stationId}.json
-  Future<List<Program>> getDailyPrograms(String stationId, DateTime date) async {
+  Future<List<Program>> getDailyPrograms(
+      String stationId, DateTime date) async {
     final dateStr =
         '${date.year}${date.month.toString().padLeft(2, '0')}${date.day.toString().padLeft(2, '0')}';
-    final url =
-        '${ApiEndpoints.dailyProgram}/$dateStr/station/$stationId.json';
+    final url = '${ApiEndpoints.dailyProgram}/$dateStr/station/$stationId.json';
 
-    final response = await _dio.apiClient.get(url);
+    final response = await _safeApiCall(() => _dio.apiClient.get(url));
     final data = response.data as Map<String, dynamic>;
 
     final programs = <Program>[];
@@ -85,7 +72,8 @@ class RadikoApiClient {
     if (stationsData == null || stationsData.isEmpty) return programs;
 
     for (final stationData in stationsData) {
-      final stationIdFromData = stationData['station_id']?.toString() ?? stationId;
+      final stationIdFromData =
+          stationData['station_id']?.toString() ?? stationId;
       final progs = stationData['progs'] as List<dynamic>?;
       if (progs == null) continue;
 
@@ -104,7 +92,7 @@ class RadikoApiClient {
   /// GET https://api.radiko.jp/program/v3/weekly/{stationId}.xml
   Future<List<Program>> getWeeklyPrograms(String stationId) async {
     final url = '${ApiEndpoints.weeklyProgram}/$stationId.xml';
-    final response = await _dio.apiClient.get(url);
+    final response = await _safeApiCall(() => _dio.apiClient.get(url));
     final document = XmlDocument.parse(response.data.toString());
 
     final programs = <Program>[];
@@ -116,7 +104,8 @@ class RadikoApiClient {
           attrs[attr.name.local] = attr.value;
         }
 
-        final title = prog.findElements('title').firstOrNull?.innerText ?? '';
+        final title =
+            prog.findElements('title').firstOrNull?.innerText ?? '';
         final ft = attrs['ft'] ?? '';
         final to = attrs['to'] ?? '';
         final id = attrs['id'] ?? '';
@@ -139,4 +128,37 @@ class RadikoApiClient {
 
     return programs;
   }
+
+  /// API呼び出しのラッパー（エラーハンドリング統一）
+  Future<Response<T>> _safeApiCall<T>(
+      Future<Response<T>> Function() call) async {
+    try {
+      return await call();
+    } on DioException catch (e) {
+      final code = e.response?.statusCode ?? 0;
+      switch (code) {
+        case 401:
+          throw ApiException('認証エラー（トークン期限切れ）', code);
+        case 403:
+          throw ApiException('アクセス禁止（地域外）', code);
+        case 404:
+          throw ApiException('リソースが見つかりません', code);
+        default:
+          throw ApiException('APIエラー (${e.message})', code);
+      }
+    } catch (e) {
+      throw ApiException('ネットワークエラー: $e', 0);
+    }
+  }
+}
+
+/// API例外
+class ApiException implements Exception {
+  final String message;
+  final int statusCode;
+
+  ApiException(this.message, this.statusCode);
+
+  @override
+  String toString() => 'ApiException: $message (status: $statusCode)';
 }

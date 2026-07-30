@@ -26,13 +26,14 @@ class AuthService {
   /// POST https://api.radiko.jp/v2/api/auth1
   Future<AuthToken> auth1() async {
     _ensureDeviceInfo();
+    final appVersion = DeviceInfoGenerator.generateAppVersion();
 
     final response = await _dio.authClient.get(
       ApiEndpoints.auth1,
       options: Options(
         headers: {
           'X-Radiko-App': DeviceConfig.appType,
-          'X-Radiko-App-Version': DeviceConfig.appVersion,
+          'X-Radiko-App-Version': appVersion,
           'X-Radiko-Device': _device!,
           'X-Radiko-User': _userId!,
         },
@@ -75,16 +76,20 @@ class AuthService {
         options: Options(
           headers: {
             'X-Radiko-App': DeviceConfig.appType,
-            'X-Radiko-App-Version': DeviceConfig.appVersion,
+            'X-Radiko-App-Version': DeviceInfoGenerator.generateAppVersion(),
             'X-Radiko-Device': _device!,
             'X-Radiko-User': _userId!,
             'X-Radiko-AuthToken': token.token,
             'X-Radiko-Partialkey': partialKey,
             'X-Radiko-Location': location,
-            'X-Radiko-Connection': DeviceConfig.connection,
           },
         ),
       );
+
+      // ステータスコードで判定（rajikoの仕様に準拠）
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        throw AuthException('auth2失败: 認証エラー (status: ${response.statusCode})');
+      }
 
       final body = response.data.toString().trim();
 
@@ -120,12 +125,35 @@ class AuthService {
   Future<AuthToken> authenticate(String areaId) async {
     // キャッシュされた有効なトークンを確認
     final cached = await _loadToken();
-    if (cached != null && !cached.isExpired && cached.areaId == areaId) {
-      return cached;
+    if (cached != null && !cached.isExpired) {
+      // エリアが一致する場合は再利用
+      if (cached.areaId == areaId) {
+        return cached;
+      }
+      // 異なるエリアの場合は再認証（auth_checkで検証してもトークンは
+      // 元のエリアに紐付いているため、新しいエリアでの再認証が必要）
     }
 
     final token = await auth1();
     return auth2(token, areaId);
+  }
+
+  /// トークンの有効性を確認（auth_check API）
+  /// エンドポイント: https://radiko.jp/v2/api/auth_check
+  Future<bool> verifyToken(String token) async {
+    try {
+      final response = await _dio.apiClient.get(
+        ApiEndpoints.authCheck,
+        options: Options(
+          headers: {
+            'X-Radiko-AuthToken': token,
+          },
+        ),
+      );
+      return response.data.toString().trim() == 'OK';
+    } catch (e) {
+      return false;
+    }
   }
 
   /// トークンキャッシュから読み込み

@@ -55,8 +55,12 @@ class PlayerService {
     } else if (state.processingState == ProcessingState.loading ||
         state.processingState == ProcessingState.buffering) {
       _updateStatus(PlayerStatus.loading);
-    } else if (state.processingState == ProcessingState.idle) {
-      _updateStatus(PlayerStatus.stopped);
+    } else if (state.processingState == ProcessingState.ready ||
+        state.processingState == ProcessingState.idle) {
+      // playing == false かつ ready または idle なら一時停止
+      _updateStatus(state.processingState == ProcessingState.idle
+          ? PlayerStatus.stopped
+          : PlayerStatus.paused);
     }
   }
 

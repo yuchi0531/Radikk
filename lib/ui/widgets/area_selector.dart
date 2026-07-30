@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/area_map.dart';
 import '../../features/auth/auth_provider.dart';
+import '../theme/app_theme.dart';
 
 /// エリア選択ドロップダウン
 class AreaSelector extends ConsumerWidget {
@@ -15,7 +16,8 @@ class AreaSelector extends ConsumerWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
         children: [
-          const Icon(Icons.location_on, size: 18, color: AppColors.primaryBlue),
+          const Icon(Icons.location_on,
+              size: 18, color: AppTheme.primaryBlue),
           const SizedBox(width: 8),
           Expanded(
             child: DropdownButtonHideUnderline(
@@ -43,9 +45,4 @@ class AreaSelector extends ConsumerWidget {
       ),
     );
   }
-}
-
-// 直接importすると循環参照の可能性があるので、ここに色定義
-class AppColors {
-  static const Color primaryBlue = Color(0xFF0058A3);
 }

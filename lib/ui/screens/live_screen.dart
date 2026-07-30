@@ -98,19 +98,21 @@ class LiveScreen extends ConsumerWidget {
 
   Future<void> _playStation(BuildContext context, WidgetRef ref,
       String stationId, String stationName, String? programTitle) async {
-    // 先に認証を実行
-    final authNotifier = ref.read(authStateProvider.notifier);
-    await authNotifier.authenticate();
-
-    // 認証成功を確認
+    // 認証が必要な場合は認証を実行
     final authState = ref.read(authStateProvider);
     if (authState.valueOrNull == null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('認証に失敗しました')),
-        );
+      await ref.read(authStateProvider.notifier).authenticate();
+
+      // 認証成功を確認
+      final authState2 = ref.read(authStateProvider);
+      if (authState2.valueOrNull == null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('認証に失敗しました')),
+          );
+        }
+        return;
       }
-      return;
     }
 
     // 再生開始

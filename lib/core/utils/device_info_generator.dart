@@ -1,4 +1,5 @@
 import 'dart:math';
+import '../constants/app_version_map.dart';
 
 /// ランダムなAndroid端末情報を生成する
 class DeviceInfoGenerator {
@@ -42,5 +43,11 @@ class DeviceInfoGenerator {
   /// デバイス文字列（例: "34.GTT9Q"）
   static String generateDevice() {
     return '${generateSdkVersion()}.${generateModel()}';
+  }
+
+  /// ランダムなアプリバージョン（rajikoの APP_VERSION_MAP から選択）
+  static String generateAppVersion() {
+    final versions = AppVersionMap.versions;
+    return versions[_random.nextInt(versions.length)];
   }
 }

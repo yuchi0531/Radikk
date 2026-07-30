@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/auth/auth_provider.dart';
 import '../../core/constants/area_map.dart';
@@ -13,17 +14,26 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _backgroundPlayback = true;
+  String _version = '0.0.1';
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
+    _loadVersion();
   }
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
       _backgroundPlayback = prefs.getBool('background_playback') ?? true;
+    });
+  }
+
+  Future<void> _loadVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    setState(() {
+      _version = info.version;
     });
   }
 
@@ -90,10 +100,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         const Divider(),
 
         _SectionTitle(title: 'アプリ情報'),
-        const ListTile(
-          leading: Icon(Icons.info_outline),
-          title: Text('Radikk'),
-          subtitle: Text('バージョン 0.0.1'),
+        ListTile(
+          leading: const Icon(Icons.info_outline),
+          title: const Text('Radikk'),
+          subtitle: Text('バージョン $_version'),
         ),
         const ListTile(
           leading: Icon(Icons.code),

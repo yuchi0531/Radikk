@@ -90,11 +90,16 @@ class PlayerNotifier extends StateNotifier<PlayerState> {
     );
 
     try {
-      // 認証状態からトークンを取得
+      // 認証状態からトークンを取得（なければ認証を実行）
       final authState = _ref.read(authStateProvider);
-      final token = authState.valueOrNull;
+      var token = authState.valueOrNull;
       if (token == null) {
-        throw Exception('認証トークンがありません。先に認証を行ってください。');
+        await _ref.read(authStateProvider.notifier).authenticate();
+        final authState2 = _ref.read(authStateProvider);
+        token = authState2.valueOrNull;
+        if (token == null) {
+          throw Exception('認証に失敗しました');
+        }
       }
 
       final playlistUrl = await _apiClient.getPlaylistCreateUrl(stationId);
@@ -132,11 +137,16 @@ class PlayerNotifier extends StateNotifier<PlayerState> {
     );
 
     try {
-      // 認証状態からトークンを取得
+      // 認証状態からトークンを取得（なければ認証を実行）
       final authState = _ref.read(authStateProvider);
-      final token = authState.valueOrNull;
+      var token = authState.valueOrNull;
       if (token == null) {
-        throw Exception('認証トークンがありません。先に認証を行ってください。');
+        await _ref.read(authStateProvider.notifier).authenticate();
+        final authState2 = _ref.read(authStateProvider);
+        token = authState2.valueOrNull;
+        if (token == null) {
+          throw Exception('認証に失敗しました');
+        }
       }
 
       final playlistUrl = await _apiClient.getPlaylistCreateUrl(stationId);
@@ -144,7 +154,7 @@ class PlayerNotifier extends StateNotifier<PlayerState> {
       final toStr = _formatDt(endTime);
 
       final url =
-          '$playlistUrl?station_id=$stationId&ft=$fromStr&to=$toStr&l=15';
+          '$playlistUrl?station_id=$stationId&ft=$fromStr&to=$toStr&l=300';
 
       await _service.playTimefree(
         url: url,

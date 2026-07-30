@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import '../constants/gps_coords.dart';
 import '../constants/area_map.dart';
 
@@ -12,7 +13,10 @@ class GpsGenerator {
   static String generateForArea(String areaId) {
     final area = AreaMap.areas.firstWhere(
       (a) => a.id == areaId,
-      orElse: () => AreaMap.areas.firstWhere((a) => a.id == 'JP13'),
+      orElse: () {
+        debugPrint('Warning: Unknown area ID: $areaId, falling back to JP13');
+        return AreaMap.areas.firstWhere((a) => a.id == 'JP13');
+      },
     );
 
     final coords = GpsCoords.coords[area.japanese] ?? [35.689488, 139.691706];
