@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/auth/auth_provider.dart';
+import '../../features/theme/theme_provider.dart';
 import '../../core/constants/area_map.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -25,6 +26,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() {
       _backgroundPlayback = prefs.getBool('background_playback') ?? true;
     });
@@ -32,6 +34,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _loadVersion() async {
     final info = await PackageInfo.fromPlatform();
+    if (!mounted) return;
     setState(() {
       _version = info.version;
     });
@@ -40,6 +43,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _setBackgroundPlayback(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('background_playback', value);
+    if (!mounted) return;
     setState(() {
       _backgroundPlayback = value;
     });
@@ -48,8 +52,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final selectedArea = ref.watch(selectedAreaProvider);
+    final themeMode = ref.watch(themeModeProvider);
 
     return ListView(
+      padding: const EdgeInsets.only(bottom: 80),
       children: [
         const SizedBox(height: 16),
         _SectionTitle(title: 'デフォルトエリア'),
@@ -67,8 +73,41 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             }).toList(),
             onChanged: (value) {
               if (value != null) {
-                ref.read(selectedAreaProvider.notifier).state = value;
+                final current = ref.read(selectedAreaProvider);
+                if (current != value) {
+                  ref.read(selectedAreaProvider.notifier).state = value;
+                  // エリア変更時は新しいエリアで再認証する
+                  // （古いエリアのトークンのままだと403になるため）
+                  ref.read(authStateProvider.notifier).authenticate();
+                }
               }
+            },
+          ),
+        ),
+        const Divider(),
+
+        _SectionTitle(title: '表示'),
+        ListTile(
+          leading: const Icon(Icons.brightness_6),
+          title: const Text('テーマ'),
+          trailing: SegmentedButton<ThemeMode>(
+            segments: const [
+              ButtonSegment(
+                value: ThemeMode.system,
+                label: Text('自動'),
+              ),
+              ButtonSegment(
+                value: ThemeMode.light,
+                icon: Icon(Icons.light_mode, size: 16),
+              ),
+              ButtonSegment(
+                value: ThemeMode.dark,
+                icon: Icon(Icons.dark_mode, size: 16),
+              ),
+            ],
+            selected: {themeMode},
+            onSelectionChanged: (mode) {
+              ref.read(themeModeProvider.notifier).setThemeMode(mode.first);
             },
           ),
         ),

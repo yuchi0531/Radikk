@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/models/program.dart';
 import '../../core/models/station.dart';
@@ -12,36 +13,29 @@ final dailyProgramsProvider =
   },
 );
 
-/// 週間番組表 Provider
-final weeklyProgramsProvider =
-    FutureProvider.family<List<Program>, String>(
-  (ref, stationId) async {
-    final client = ref.read(apiClientProvider);
-    return client.getWeeklyPrograms(stationId);
-  },
-);
-
 /// 全放送局の現在放送中の番組（指定エリア）
 final nowPlayingProvider =
     FutureProvider.family<List<(Station, Program?)>, String>(
   (ref, areaId) async {
     final client = ref.read(apiClientProvider);
-    final stations = await client.getStationsByArea(areaId);
+    final stations = await client.getStationsByAreaCached(areaId);
     final now = DateTime.now();
 
-    final results = <(Station, Program?)>[];
-    for (final station in stations) {
+    // 全放送局を並列で取得（直列だと109局分の応答待ちで遅すぎる）
+    final futures = stations.map((station) async {
       try {
         final programs = await client.getDailyPrograms(station.id, now);
         final currentProgram = programs.cast<Program?>().firstWhere(
           (p) => p?.isOnAir ?? false,
           orElse: () => null,
         );
-        results.add((station, currentProgram));
-      } catch (_) {
-        results.add((station, null));
+        return (station, currentProgram);
+      } catch (e) {
+        debugPrint('[nowPlayingProvider] ${station.id}(${station.name}) の番組取得失敗: $e');
+        return (station, null);
       }
-    }
-    return results;
+    });
+
+    return Future.wait(futures);
   },
 );

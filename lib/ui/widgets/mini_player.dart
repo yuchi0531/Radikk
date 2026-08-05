@@ -38,7 +38,9 @@ class MiniPlayer extends ConsumerWidget {
           color: isError ? Colors.red.shade50 : Colors.white,
           child: InkWell(
             onTap: () {
-              GoRouter.of(context).go('/player');
+              // push で遷移する（go だと ShellRoute が破棄され、
+              // 戻る/停止の pop() が GoError になるため）
+              GoRouter.of(context).push('/player');
             },
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -77,11 +79,24 @@ class MiniPlayer extends ConsumerWidget {
           onPressed: () {
             // 再生中の局があれば再度再生を試行
             if (playerState.stationId != null) {
-              ref.read(playerProvider.notifier).playLive(
-                    stationId: playerState.stationId!,
-                    stationName: playerState.stationName ?? '',
-                    programTitle: playerState.programTitle,
-                  );
+              final notifier = ref.read(playerProvider.notifier);
+              if (playerState.isTimefree &&
+                  playerState.timefreeStartTime != null &&
+                  playerState.timefreeEndTime != null) {
+                notifier.playTimefree(
+                  stationId: playerState.stationId!,
+                  stationName: playerState.stationName ?? '',
+                  programTitle: playerState.programTitle ?? '',
+                  startTime: playerState.timefreeStartTime!,
+                  endTime: playerState.timefreeEndTime!,
+                );
+              } else {
+                notifier.playLive(
+                  stationId: playerState.stationId!,
+                  stationName: playerState.stationName ?? '',
+                  programTitle: playerState.programTitle,
+                );
+              }
             }
           },
         ),
@@ -95,7 +110,8 @@ class MiniPlayer extends ConsumerWidget {
       ],
     );
   }
-}  Widget _buildNormalRow(
+
+  Widget _buildNormalRow(
     BuildContext context,
     WidgetRef ref,
     PlayerState playerState,
@@ -154,3 +170,4 @@ class MiniPlayer extends ConsumerWidget {
       ],
     );
   }
+}

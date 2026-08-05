@@ -1,4 +1,5 @@
 import 'package:equatable/equatable.dart';
+import '../utils/radiko_time.dart';
 
 class Program extends Equatable {
   final String id;
@@ -30,8 +31,8 @@ class Program extends Equatable {
   });
 
   factory Program.fromJson(Map<String, dynamic> json, String stationId) {
-    final startTime = DateTime.tryParse(json['ft'] ?? '') ?? DateTime.now();
-    final endTime = DateTime.tryParse(json['to'] ?? '') ?? DateTime.now();
+    final startTime = parseRadikoDateTime(json['ft']);
+    final endTime = parseRadikoDateTime(json['to']);
     return Program(
       id: json['id']?.toString() ?? '',
       title: json['title'] ?? '',
@@ -48,15 +49,15 @@ class Program extends Equatable {
     );
   }
 
-  /// 放送中かどうか
+  /// 放送中かどうか（startTime/endTime は UTC で保持）
   bool get isOnAir {
-    final now = DateTime.now();
+    final now = DateTime.now().toUtc();
     return now.isAfter(startTime) && now.isBefore(endTime);
   }
 
   /// タイムフリーで聴けるかどうか（放送終了後7日以内）
   bool get isTimefreeAvailable {
-    final now = DateTime.now();
+    final now = DateTime.now().toUtc();
     return now.isAfter(endTime) &&
         now.isBefore(endTime.add(const Duration(days: 7)));
   }

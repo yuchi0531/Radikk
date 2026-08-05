@@ -1,3 +1,5 @@
+import '../constants/device_config.dart';
+
 class AuthToken {
   final String token;
   final int keyOffset;
@@ -15,9 +17,12 @@ class AuthToken {
     required this.createdAt,
   });
 
-  /// 期限切れかどうか（70分）
+  /// 期限切れかどうか（70分 = 再取得猶予時間）
   bool get isExpired {
-    return DateTime.now().difference(createdAt).inSeconds > 4200;
+    return DateTime.now()
+            .difference(createdAt)
+            .inSeconds >
+        DeviceConfig.tokenRefreshSeconds;
   }
 
   Map<String, dynamic> toJson() => {

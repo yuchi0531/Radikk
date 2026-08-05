@@ -12,20 +12,34 @@ import '../../core/utils/key_generator.dart';
 class AuthService {
   final _dio = RadikoDioClient();
   static const _tokenKey = 'radiko_auth_token';
+  static const _userIdKey = 'radiko_user_id';
+  static const _deviceKey = 'radiko_device';
 
-  /// 端末情報
+  /// 端末情報（起動間で固定するためSharedPreferencesに永続化）
   String? _userId;
   String? _device;
 
-  void _ensureDeviceInfo() {
-    _userId ??= DeviceInfoGenerator.generateUserId();
-    _device ??= DeviceInfoGenerator.generateDevice();
+  Future<void> _ensureDeviceInfo() async {
+    if (_userId != null && _device != null) return;
+    final prefs = await SharedPreferences.getInstance();
+    var userId = prefs.getString(_userIdKey);
+    var device = prefs.getString(_deviceKey);
+    if (userId == null) {
+      userId = DeviceInfoGenerator.generateUserId();
+      await prefs.setString(_userIdKey, userId);
+    }
+    if (device == null) {
+      device = DeviceInfoGenerator.generateDevice();
+      await prefs.setString(_deviceKey, device);
+    }
+    _userId = userId;
+    _device = device;
   }
 
   /// auth1: 認証トークンとキーオフセットを取得
   /// POST https://api.radiko.jp/v2/api/auth1
   Future<AuthToken> auth1() async {
-    _ensureDeviceInfo();
+    await _ensureDeviceInfo();
     final appVersion = DeviceInfoGenerator.generateAppVersion();
 
     final response = await _dio.authClient.get(
@@ -61,7 +75,7 @@ class AuthService {
   /// auth2: 認証完了、エリア情報を取得
   /// POST https://api.radiko.jp/v2/api/auth2
   Future<AuthToken> auth2(AuthToken token, String areaId) async {
-    _ensureDeviceInfo();
+    await _ensureDeviceInfo();
 
     final partialKey = KeyGenerator.generatePartialKey(
       token.keyOffset,
@@ -85,11 +99,6 @@ class AuthService {
           },
         ),
       );
-
-      // ステータスコードで判定（rajikoの仕様に準拠）
-      if (response.statusCode == 401 || response.statusCode == 403) {
-        throw AuthException('auth2失败: 認証エラー (status: ${response.statusCode})');
-      }
 
       final body = response.data.toString().trim();
 
@@ -115,6 +124,13 @@ class AuthService {
       await _saveToken(completedToken);
 
       return completedToken;
+    } on DioException catch (e) {
+      // Dio は非2xxレスポンスを例外化するため、ここでステータスコードを判定する
+      final code = e.response?.statusCode;
+      if (code == 401 || code == 403) {
+        throw AuthException('auth2失败: 認証エラー (status: $code)');
+      }
+      throw AuthException('auth2失败: ${e.message}');
     } catch (e) {
       if (e is AuthException) rethrow;
       throw AuthException('auth2失败: $e');
@@ -138,23 +154,8 @@ class AuthService {
     return auth2(token, areaId);
   }
 
-  /// トークンの有効性を確認（auth_check API）
-  /// エンドポイント: https://radiko.jp/v2/api/auth_check
-  Future<bool> verifyToken(String token) async {
-    try {
-      final response = await _dio.apiClient.get(
-        ApiEndpoints.authCheck,
-        options: Options(
-          headers: {
-            'X-Radiko-AuthToken': token,
-          },
-        ),
-      );
-      return response.data.toString().trim() == 'OK';
-    } catch (e) {
-      return false;
-    }
-  }
+  /// キャッシュされたトークンを読み込む（起動時復元用）
+  Future<AuthToken?> loadCachedToken() => _loadToken();
 
   /// トークンキャッシュから読み込み
   Future<AuthToken?> _loadToken() async {
@@ -165,7 +166,7 @@ class AuthService {
     try {
       // simple JSON parse without depending on fromJson
       final parts = json.split('|');
-      if (parts.length < 5) return null;
+      if (parts.length < 6) return null;
       final token = AuthToken(
         token: parts[0],
         keyOffset: int.tryParse(parts[1]) ?? 0,

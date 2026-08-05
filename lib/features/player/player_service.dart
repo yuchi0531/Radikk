@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:audio_session/audio_session.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import '../../core/constants/device_config.dart';
 
@@ -15,10 +16,12 @@ class PlayerService {
   String? _currentProgramTitle;
   StreamSubscription<PlayerState>? _stateSubscription;
   StreamSubscription<Duration?>? _positionSubscription;
+  StreamSubscription<PlaybackEvent>? _eventSubscription;
 
   // コールバック
   void Function(PlayerStatus status)? onStatusChanged;
   void Function(Duration position, Duration duration)? onPositionChanged;
+  void Function(String message)? onError;
 
   PlayerService() {
     _stateSubscription = _player.playerStateStream.listen(_handlePlayerState);
@@ -28,29 +31,47 @@ class PlayerService {
         onPositionChanged?.call(pos, duration);
       }
     });
+    // 再生中のストリームエラーを検知する（HLSのセグメント取得失敗など）
+    // 再生エラーは playbackEventStream にエラーとして流れる
+    _eventSubscription = _player.playbackEventStream.listen(
+      (_) {},
+      onError: (Object e) {
+        onError?.call('再生エラー: $e');
+        _updateStatus(PlayerStatus.error);
+      },
+    );
     _initAudioSession();
   }
 
   Future<void> _initAudioSession() async {
-    final session = await AudioSession.instance;
-    await session.configure(const AudioSessionConfiguration(
-      avAudioSessionCategory: AVAudioSessionCategory.playback,
-      avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.mixWithOthers,
-      avAudioSessionMode: AVAudioSessionMode.defaultMode,
-      avAudioSessionRouteSharingPolicy:
-          AVAudioSessionRouteSharingPolicy.defaultPolicy,
-      avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
-      androidAudioAttributes: AndroidAudioAttributes(
-        contentType: AndroidAudioContentType.music,
-        usage: AndroidAudioUsage.media,
-      ),
-      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
-      androidWillPauseWhenDucked: true,
-    ));
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playback,
+        avAudioSessionCategoryOptions:
+            AVAudioSessionCategoryOptions.mixWithOthers,
+        avAudioSessionMode: AVAudioSessionMode.defaultMode,
+        avAudioSessionRouteSharingPolicy:
+            AVAudioSessionRouteSharingPolicy.defaultPolicy,
+        avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
+        androidAudioAttributes: AndroidAudioAttributes(
+          contentType: AndroidAudioContentType.music,
+          usage: AndroidAudioUsage.media,
+        ),
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+        androidWillPauseWhenDucked: true,
+      ));
+    } catch (e) {
+      // オーディオセッション設定の失敗は再生継続可能なのでログのみ
+      debugPrint('[PlayerService] AudioSession設定失敗: $e');
+    }
   }
 
   void _handlePlayerState(PlayerState state) {
-    if (state.playing) {
+    if (state.processingState == ProcessingState.completed) {
+      // ストリームの終端に到達（ライブ配信終了・タイムフリーの最後）
+      _updateStatus(PlayerStatus.stopped);
+    } else if (state.playing) {
       _updateStatus(PlayerStatus.playing);
     } else if (state.processingState == ProcessingState.loading ||
         state.processingState == ProcessingState.buffering) {
@@ -75,6 +96,7 @@ class PlayerService {
   Future<void> playLive({
     required String url,
     required String authToken,
+    String? areaId,
     String? stationId,
     String? programTitle,
   }) async {
@@ -84,11 +106,13 @@ class PlayerService {
       _updateStatus(PlayerStatus.loading);
 
       // HLSストリームとして再生（just_audioがm3u8をネイティブで処理）
+      // 認証には X-Radiko-AuthToken と X-Radiko-AreaId ヘッダーが必須（検証済み）
       await _player.setAudioSource(
         HlsAudioSource(
           Uri.parse(url),
           headers: {
             'X-Radiko-AuthToken': authToken,
+            'X-Radiko-AreaId': ?areaId,
             'User-Agent': DeviceConfig.userAgent,
           },
         ),
@@ -104,12 +128,14 @@ class PlayerService {
   Future<void> playTimefree({
     required String url,
     required String authToken,
+    String? areaId,
     String? stationId,
     String? programTitle,
   }) async {
     await playLive(
       url: url,
       authToken: authToken,
+      areaId: areaId,
       stationId: stationId,
       programTitle: programTitle,
     );
@@ -169,6 +195,7 @@ class PlayerService {
   Future<void> dispose() async {
     _stateSubscription?.cancel();
     _positionSubscription?.cancel();
+    _eventSubscription?.cancel();
     await _player.dispose();
   }
 }

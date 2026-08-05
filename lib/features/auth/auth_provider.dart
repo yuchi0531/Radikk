@@ -16,17 +16,31 @@ final authStateProvider = AsyncNotifierProvider<AuthNotifier, AuthToken?>(
 class AuthNotifier extends AsyncNotifier<AuthToken?> {
   @override
   Future<AuthToken?> build() async {
-    return null; // 初回は明示的にauthenticateを呼ぶ
+    // 起動時にキャッシュされたトークンを復元
+    // （期限切れならnullとして扱う）
+    final service = ref.read(authServiceProvider);
+    final cached = await service.loadCachedToken();
+    if (cached != null && !cached.isExpired) {
+      return cached;
+    }
+    return null;
   }
 
   /// 認証実行
+  /// 認証の完了前にエリアが変更された場合は、最新のエリアで再認証する
   Future<void> authenticate() async {
     state = const AsyncLoading();
-    final areaId = ref.read(selectedAreaProvider);
     final service = ref.read(authServiceProvider);
 
     state = await AsyncValue.guard(() async {
-      return service.authenticate(areaId);
+      while (true) {
+        final areaId = ref.read(selectedAreaProvider);
+        final token = await service.authenticate(areaId);
+        // 認証中にエリアが変わった場合は古いエリアのトークンを破棄して再認証
+        if (ref.read(selectedAreaProvider) == areaId) {
+          return token;
+        }
+      }
     });
   }
 

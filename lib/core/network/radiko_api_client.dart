@@ -3,6 +3,7 @@ import 'package:xml/xml.dart';
 import '../constants/api_endpoints.dart';
 import '../models/program.dart';
 import '../models/station.dart';
+import '../utils/radiko_time.dart';
 import 'dio_client.dart';
 
 /// radiko API クライアント
@@ -19,17 +20,38 @@ class RadikoApiClient {
 
     final stations = <Station>[];
     for (final element in document.findAllElements('station')) {
-      final attrs = <String, String>{};
-      for (final attr in element.attributes) {
-        attrs[attr.name.local] = attr.value;
-      }
+      // radikoのXMLでは id, name, area_id 等は属性ではなく子要素
+      final id = element.getElement('id')?.innerText ?? '';
+      final name = element.getElement('name')?.innerText ?? '';
+      final banner = element.getElement('banner')?.innerText;
+      final href = element.getElement('href')?.innerText;
 
-      // area_idをパース
-      final areaIdNodes = element.findElements('area_id');
-      final areaIds = areaIdNodes.map((n) => n.innerText).toList();
+      // area_idの子要素を取得
+      final areaIds = element
+          .findElements('area_id')
+          .map((n) => n.innerText)
+          .toList();
 
-      final station = Station.fromXml(attrs);
-      stations.add(station.copyWith(areaIds: areaIds));
+      // logo（224x100）を取得
+      final allLogos = element.findAllElements('logo').toList();
+      final logoUrl = allLogos.isNotEmpty
+          ? (allLogos.firstWhere(
+              (l) =>
+                  l.getAttribute('width') == '224' &&
+                  l.getAttribute('height') == '100',
+              orElse: () => allLogos.first,
+            ).innerText)
+          : null;
+
+      final station = Station(
+        id: id,
+        name: name,
+        logoUrl: logoUrl,
+        bannerUrl: banner,
+        detailUrl: href,
+        areaIds: areaIds,
+      );
+      stations.add(station);
     }
 
     return stations;
@@ -41,30 +63,85 @@ class RadikoApiClient {
     return allStations.where((s) => s.areaIds.contains(areaId)).toList();
   }
 
+  /// 放送局一覧をキャッシュするための静的フィールド
+  static List<Station>? _stationsCache;
+  static DateTime? _stationsCacheAt;
+
+  /// キャッシュ付き放送局一覧（1時間キャッシュ）
+  Future<List<Station>> getStationsCached() async {
+    final now = DateTime.now();
+    if (_stationsCache != null &&
+        _stationsCacheAt != null &&
+        now.difference(_stationsCacheAt!) < const Duration(hours: 1)) {
+      return _stationsCache!;
+    }
+    final stations = await getStations();
+    _stationsCache = stations;
+    _stationsCacheAt = now;
+    return stations;
+  }
+
+  /// 特定エリアの放送局一覧を取得（キャッシュ付き）
+  Future<List<Station>> getStationsByAreaCached(String areaId) async {
+    final allStations = await getStationsCached();
+    return allStations.where((s) => s.areaIds.contains(areaId)).toList();
+  }
+
   /// ストリーム設定を取得（playlist_create_url を含む）
   /// GET https://radiko.jp/v3/station/stream/pc_html5/{stationId}.xml
-  Future<String> getPlaylistCreateUrl(String stationId) async {
+  ///
+  /// ライブストリーム用: areafree="1" のURLを選択（エリア内アクセス）
+  /// タイムフリー用: timefree="1" かつ areafree="0" のURLを選択
+  Future<String> getPlaylistCreateUrl(String stationId,
+      {bool timefree = false}) async {
     final url = '${ApiEndpoints.stationStream}/$stationId.xml';
     final response = await _safeApiCall(() => _dio.apiClient.get(url));
     final document = XmlDocument.parse(response.data.toString());
 
-    final urlElement =
-        document.findAllElements('playlist_create_url').firstOrNull;
-    if (urlElement == null) {
+    final urlElements = document.findAllElements('url');
+    if (urlElements.isEmpty) {
       throw Exception('playlist_create_url が見つかりません: $stationId');
     }
-    return urlElement.innerText.trim();
+
+    // timefree再生の場合は areafree="0" かつ timefree="1" のURLを選択
+    // ライブ再生の場合は areafree="1" のURLを選択
+    XmlElement? selectedUrl;
+    if (timefree) {
+      // areafree="0" かつ timefree="1"
+      selectedUrl = urlElements.firstWhere(
+        (e) =>
+            e.getAttribute('areafree') == '0' &&
+            e.getAttribute('timefree') == '1',
+        orElse: () => urlElements.first,
+      );
+    } else {
+      // areafree="1" を優先（エリア内ライブストリーム）
+      selectedUrl = urlElements.firstWhere(
+        (e) => e.getAttribute('areafree') == '1',
+        orElse: () => urlElements.first,
+      );
+    }
+
+    final playlistUrl =
+        selectedUrl.getElement('playlist_create_url')?.innerText.trim();
+    if (playlistUrl == null || playlistUrl.isEmpty) {
+      throw Exception('playlist_create_url が空です: $stationId');
+    }
+    return playlistUrl;
   }
 
   /// 日別番組表を取得
   /// GET https://api.radiko.jp/program/v4/date/{YYYYMMDD}/station/{stationId}.json
   Future<List<Program>> getDailyPrograms(
       String stationId, DateTime date) async {
+    // 日付はJST基準で表記される
+    final jstDate = date.toUtc().add(jstOffset);
     final dateStr =
-        '${date.year}${date.month.toString().padLeft(2, '0')}${date.day.toString().padLeft(2, '0')}';
+        '${jstDate.year}${jstDate.month.toString().padLeft(2, '0')}${jstDate.day.toString().padLeft(2, '0')}';
     final url = '${ApiEndpoints.dailyProgram}/$dateStr/station/$stationId.json';
 
-    final response = await _safeApiCall(() => _dio.apiClient.get(url));
+    final response =
+        await _safeApiCall(() => _dio.authClient.get(url));
     final data = response.data as Map<String, dynamic>;
 
     final programs = <Program>[];
@@ -74,13 +151,31 @@ class RadikoApiClient {
     for (final stationData in stationsData) {
       final stationIdFromData =
           stationData['station_id']?.toString() ?? stationId;
-      final progs = stationData['progs'] as List<dynamic>?;
+      // APIレスポンス: stations[].programs.program[]
+      final programsWrapper =
+          stationData['programs'] as Map<String, dynamic>?;
+      final progs = programsWrapper?['program'] as List<dynamic>?;
       if (progs == null) continue;
 
       for (final prog in progs) {
-        programs.add(Program.fromJson(
-          prog as Map<String, dynamic>,
-          stationIdFromData,
+        final progData = prog as Map<String, dynamic>;
+        // ft/to は "20260730050000" 形式 → DateTime に変換
+        final startTime = parseRadikoDateTime(progData['ft']);
+        final endTime = parseRadikoDateTime(progData['to']);
+        programs.add(Program(
+          id: progData['episode_id']?.toString() ??
+              progData['id']?.toString() ?? '',
+          title: progData['title'] ?? '',
+          description: progData['description'],
+          personality: progData['performer'],
+          imageUrl: progData['img'],
+          stationId: stationIdFromData,
+          stationName: stationData['station_name']?.toString() ?? '',
+          startTime: startTime,
+          endTime: endTime,
+          duration: endTime.difference(startTime),
+          infoUrl: progData['url'],
+          shareUrl: progData['episode_id']?.toString(),
         ));
       }
     }
@@ -92,7 +187,7 @@ class RadikoApiClient {
   /// GET https://api.radiko.jp/program/v3/weekly/{stationId}.xml
   Future<List<Program>> getWeeklyPrograms(String stationId) async {
     final url = '${ApiEndpoints.weeklyProgram}/$stationId.xml';
-    final response = await _safeApiCall(() => _dio.apiClient.get(url));
+    final response = await _safeApiCall(() => _dio.authClient.get(url));
     final document = XmlDocument.parse(response.data.toString());
 
     final programs = <Program>[];

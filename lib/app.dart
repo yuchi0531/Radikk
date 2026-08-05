@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'ui/screens/live_screen.dart';
@@ -9,6 +10,7 @@ import 'ui/widgets/mini_player.dart';
 import 'ui/theme/app_theme.dart';
 import 'features/player/player_provider.dart';
 import 'features/player/player_service.dart';
+import 'features/theme/theme_provider.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 final _shellNavigatorKey = GlobalKey<NavigatorState>();
@@ -94,34 +96,47 @@ class _MainShellState extends State<_MainShell> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Column(
-        children: [
-          Expanded(child: widget.child),
-          const MiniPlayer(),
-        ],
+    final brightness = Theme.of(context).brightness;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness:
+            brightness == Brightness.dark ? Brightness.light : Brightness.dark,
+        systemNavigationBarColor: Theme.of(context).scaffoldBackgroundColor,
+        systemNavigationBarIconBrightness:
+            brightness == Brightness.dark ? Brightness.light : Brightness.dark,
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: _onTabTapped,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.radio),
-            label: 'ライブ',
+      child: SafeArea(
+        child: Scaffold(
+          body: Column(
+            children: [
+              Expanded(child: widget.child),
+              const MiniPlayer(),
+            ],
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.calendar_today),
-            label: '番組表',
+          bottomNavigationBar: BottomNavigationBar(
+            currentIndex: _currentIndex,
+            onTap: _onTabTapped,
+            items: const [
+              BottomNavigationBarItem(
+                icon: Icon(Icons.radio),
+                label: 'ライブ',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.calendar_today),
+                label: '番組表',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.replay),
+                label: 'タイムフリー',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.settings),
+                label: '設定',
+              ),
+            ],
           ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.replay),
-            label: 'タイムフリー',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.settings),
-            label: '設定',
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -133,11 +148,14 @@ class RadikkApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(routerProvider);
+    final themeMode = ref.watch(themeModeProvider);
 
     return MaterialApp.router(
       title: 'Radikk',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
+      themeMode: themeMode,
       routerConfig: router,
     );
   }
@@ -263,7 +281,9 @@ class FullPlayerScreen extends ConsumerWidget {
                           .toDouble()
                           .clamp(0, playerState.duration!.inSeconds.toDouble()),
                       max: playerState.duration!.inSeconds.toDouble(),
-                      onChanged: (value) {
+                      // ドラッグ中の連続seekを避け、離した時点でシークする
+                      onChanged: (_) {},
+                      onChangeEnd: (value) {
                         ref.read(playerProvider.notifier)
                             .seek(Duration(seconds: value.toInt()));
                       },

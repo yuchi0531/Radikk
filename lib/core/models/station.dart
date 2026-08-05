@@ -19,16 +19,6 @@ class Station extends Equatable {
     this.areaIds = const [],
   });
 
-  factory Station.fromXml(Map<String, String> attrs) {
-    return Station(
-      id: attrs['id'] ?? '',
-      name: attrs['name'] ?? '',
-      logoUrl: attrs['logo_xsmall'],
-      bannerUrl: attrs['banner'],
-      detailUrl: attrs['href'],
-    );
-  }
-
   Station copyWith({
     String? id,
     String? name,

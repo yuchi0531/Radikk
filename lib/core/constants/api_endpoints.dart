@@ -6,7 +6,6 @@ class ApiEndpoints {
   // Auth
   static const String auth1 = '/v2/api/auth1';
   static const String auth2 = '/v2/api/auth2';
-  static const String authCheck = '/v2/api/auth_check';
 
   // Station
   static const String stationRegionFull = '/v3/station/region/full.xml';
@@ -15,7 +14,4 @@ class ApiEndpoints {
   // Program
   static const String weeklyProgram = '/program/v3/weekly';
   static const String dailyProgram = '/program/v4/date';
-
-  // Now playing
-  static const String nowOnAir = '/music/api/v1/noas';
 }
