@@ -30,8 +30,8 @@ ProgramSlot computeProgramSlot({
   required double totalHeight,
   double minHeight = 12,
 }) {
-  // 完全に範囲外なら非表示
-  if (endTime.isBefore(rangeStartUtc) || startTime.isAfter(rangeEndUtc)) {
+  // 完全に範囲外なら非表示（境界ちょうども範囲外として扱う）
+  if (!endTime.isAfter(rangeStartUtc) || !startTime.isBefore(rangeEndUtc)) {
     return const ProgramSlot(top: 0, height: 0, visible: false);
   }
 

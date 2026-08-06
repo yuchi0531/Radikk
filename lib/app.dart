@@ -13,42 +13,56 @@ import 'features/player/player_service.dart';
 import 'features/theme/theme_provider.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
-final _shellNavigatorKey = GlobalKey<NavigatorState>();
 
 final routerProvider = Provider<GoRouter>((ref) {
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
     initialLocation: '/',
     routes: [
-      ShellRoute(
-        navigatorKey: _shellNavigatorKey,
-        builder: (context, state, child) {
-          return _MainShell(child: child);
+      StatefulShellRoute.indexedStack(
+        builder: (context, state, navigationShell) {
+          return _MainShell(navigationShell: navigationShell);
         },
-        routes: [
-          GoRoute(
-            path: '/',
-            pageBuilder: (context, state) => const NoTransitionPage(
-              child: LiveScreen(),
-            ),
+        branches: [
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/',
+                pageBuilder: (context, state) => const NoTransitionPage(
+                  child: LiveScreen(),
+                ),
+              ),
+            ],
           ),
-          GoRoute(
-            path: '/programs',
-            pageBuilder: (context, state) => const NoTransitionPage(
-              child: ProgramGuideScreen(),
-            ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/programs',
+                pageBuilder: (context, state) => const NoTransitionPage(
+                  child: ProgramGuideScreen(),
+                ),
+              ),
+            ],
           ),
-          GoRoute(
-            path: '/timefree',
-            pageBuilder: (context, state) => const NoTransitionPage(
-              child: TimefreeScreen(),
-            ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/timefree',
+                pageBuilder: (context, state) => const NoTransitionPage(
+                  child: TimefreeScreen(),
+                ),
+              ),
+            ],
           ),
-          GoRoute(
-            path: '/settings',
-            pageBuilder: (context, state) => const NoTransitionPage(
-              child: SettingsScreen(),
-            ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/settings',
+                pageBuilder: (context, state) => const NoTransitionPage(
+                  child: SettingsScreen(),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -64,34 +78,15 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 });
 
-class _MainShell extends StatefulWidget {
-  final Widget child;
-  const _MainShell({required this.child});
-
-  @override
-  State<_MainShell> createState() => _MainShellState();
-}
-
-class _MainShellState extends State<_MainShell> {
-  int _currentIndex = 0;
+class _MainShell extends StatelessWidget {
+  final StatefulNavigationShell navigationShell;
+  const _MainShell({required this.navigationShell});
 
   void _onTabTapped(int index) {
-    setState(() => _currentIndex = index);
-    final locations = ['/', '/programs', '/timefree', '/settings'];
-    GoRouter.of(context).go(locations[index]);
-  }
-
-  // GoRouter の遷移で _currentIndex を同期
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final routerState = GoRouterState.of(context);
-    final locations = ['/', '/programs', '/timefree', '/settings'];
-    final currentPath = routerState.uri.toString();
-    final newIndex = locations.indexOf(currentPath);
-    if (newIndex != -1 && newIndex != _currentIndex) {
-      setState(() => _currentIndex = newIndex);
-    }
+    navigationShell.goBranch(
+      index,
+      initialLocation: index == navigationShell.currentIndex,
+    );
   }
 
   @override
@@ -110,12 +105,12 @@ class _MainShellState extends State<_MainShell> {
         child: Scaffold(
           body: Column(
             children: [
-              Expanded(child: widget.child),
+              Expanded(child: navigationShell),
               const MiniPlayer(),
             ],
           ),
           bottomNavigationBar: BottomNavigationBar(
-            currentIndex: _currentIndex,
+            currentIndex: navigationShell.currentIndex,
             onTap: _onTabTapped,
             items: const [
               BottomNavigationBarItem(
@@ -162,11 +157,19 @@ class RadikkApp extends ConsumerWidget {
 }
 
 /// フルプレイヤー画面
-class FullPlayerScreen extends ConsumerWidget {
+class FullPlayerScreen extends ConsumerStatefulWidget {
   const FullPlayerScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<FullPlayerScreen> createState() => _FullPlayerScreenState();
+}
+
+class _FullPlayerScreenState extends ConsumerState<FullPlayerScreen> {
+  /// ドラッグ中のシーク位置（null なら再生位置に追従）
+  double? _dragValue;
+
+  @override
+  Widget build(BuildContext context) {
     final playerState = ref.watch(playerProvider);
     final theme = Theme.of(context);
 
@@ -277,13 +280,16 @@ class FullPlayerScreen extends ConsumerWidget {
                           overlayRadius: 0),
                     ),
                     child: Slider(
-                      value: playerState.position.inSeconds
-                          .toDouble()
+                      value: (_dragValue ??
+                              playerState.position.inSeconds.toDouble())
                           .clamp(0, playerState.duration!.inSeconds.toDouble()),
                       max: playerState.duration!.inSeconds.toDouble(),
-                      // ドラッグ中の連続seekを避け、離した時点でシークする
-                      onChanged: (_) {},
+                      // ドラッグ中はローカルの _dragValue に追従させ、
+                      // 離した時点でシークする
+                      onChanged: (value) =>
+                          setState(() => _dragValue = value),
                       onChangeEnd: (value) {
+                        setState(() => _dragValue = null);
                         ref.read(playerProvider.notifier)
                             .seek(Duration(seconds: value.toInt()));
                       },

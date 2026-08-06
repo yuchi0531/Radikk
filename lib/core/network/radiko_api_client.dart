@@ -130,6 +130,10 @@ class RadikoApiClient {
     return playlistUrl;
   }
 
+  /// 日別番組表をキャッシュするための静的フィールド
+  static final Map<String, List<Program>> _dailyCache = {};
+  static final Map<String, DateTime> _dailyCacheAt = {};
+
   /// 日別番組表を取得
   /// GET https://api.radiko.jp/program/v4/date/{YYYYMMDD}/station/{stationId}.json
   Future<List<Program>> getDailyPrograms(
@@ -138,6 +142,22 @@ class RadikoApiClient {
     final jstDate = date.toUtc().add(jstOffset);
     final dateStr =
         '${jstDate.year}${jstDate.month.toString().padLeft(2, '0')}${jstDate.day.toString().padLeft(2, '0')}';
+    final cacheKey = '$stationId-$dateStr';
+
+    // 1時間キャッシュ
+    final now = DateTime.now();
+    final cachedAt = _dailyCacheAt[cacheKey];
+    if (cachedAt != null &&
+        now.difference(cachedAt) < const Duration(hours: 1)) {
+      return _dailyCache[cacheKey]!;
+    }
+
+    // キャッシュがたまりすぎないように制限（メモリ保護）
+    if (_dailyCache.length > 300) {
+      _dailyCache.clear();
+      _dailyCacheAt.clear();
+    }
+
     final url = '${ApiEndpoints.dailyProgram}/$dateStr/station/$stationId.json';
 
     final response =
@@ -180,47 +200,8 @@ class RadikoApiClient {
       }
     }
 
-    return programs;
-  }
-
-  /// 週間番組表を取得
-  /// GET https://api.radiko.jp/program/v3/weekly/{stationId}.xml
-  Future<List<Program>> getWeeklyPrograms(String stationId) async {
-    final url = '${ApiEndpoints.weeklyProgram}/$stationId.xml';
-    final response = await _safeApiCall(() => _dio.authClient.get(url));
-    final document = XmlDocument.parse(response.data.toString());
-
-    final programs = <Program>[];
-    final progElements = document.findAllElements('prog');
-    for (final prog in progElements) {
-      try {
-        final attrs = <String, String>{};
-        for (final attr in prog.attributes) {
-          attrs[attr.name.local] = attr.value;
-        }
-
-        final title =
-            prog.findElements('title').firstOrNull?.innerText ?? '';
-        final ft = attrs['ft'] ?? '';
-        final to = attrs['to'] ?? '';
-        final id = attrs['id'] ?? '';
-
-        programs.add(Program.fromJson({
-          'id': id,
-          'title': title,
-          'ft': ft,
-          'to': to,
-          'desc': prog.findElements('desc').firstOrNull?.innerText,
-          'pfm': prog.findElements('pfm').firstOrNull?.innerText,
-          'img': prog.findElements('img').firstOrNull?.innerText,
-          'info': prog.findElements('info').firstOrNull?.innerText,
-          'share': prog.findElements('share').firstOrNull?.innerText,
-        }, stationId));
-      } catch (_) {
-        // パースエラーはスキップ
-      }
-    }
-
+    _dailyCache[cacheKey] = programs;
+    _dailyCacheAt[cacheKey] = now;
     return programs;
   }
 

@@ -33,7 +33,9 @@ class AreaSelector extends ConsumerWidget {
                 }).toList(),
                 onChanged: (value) {
                   if (value != null) {
-                    ref.read(selectedAreaProvider.notifier).state = value;
+                    ref
+                        .read(selectedAreaProvider.notifier)
+                        .setSelectedArea(value);
                     // エリア変更時に再認証
                     ref.read(authStateProvider.notifier).authenticate();
                   }

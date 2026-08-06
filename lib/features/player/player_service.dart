@@ -18,18 +18,21 @@ class PlayerService {
   StreamSubscription<Duration?>? _positionSubscription;
   StreamSubscription<PlaybackEvent>? _eventSubscription;
 
+  /// 明示的な stop() 実行中かどうか（idle遷移をエラー扱いしないため）
+  bool _isStopping = false;
+
   // コールバック
   void Function(PlayerStatus status)? onStatusChanged;
-  void Function(Duration position, Duration duration)? onPositionChanged;
+  void Function(Duration position, Duration? duration)? onPositionChanged;
   void Function(String message)? onError;
 
   PlayerService() {
     _stateSubscription = _player.playerStateStream.listen(_handlePlayerState);
     _positionSubscription = _player.positionStream.listen((pos) {
+      // duration が null（ライブHLSなど）でも通知する
+      // 呼び出し側は duration ?? this.duration で既存値を保持する
       final duration = _player.duration;
-      if (duration != null) {
-        onPositionChanged?.call(pos, duration);
-      }
+      onPositionChanged?.call(pos, duration);
     });
     // 再生中のストリームエラーを検知する（HLSのセグメント取得失敗など）
     // 再生エラーは playbackEventStream にエラーとして流れる
@@ -43,13 +46,16 @@ class PlayerService {
     _initAudioSession();
   }
 
-  Future<void> _initAudioSession() async {
+  Future<void> _initAudioSession({bool backgroundPlayback = true}) async {
     try {
       final session = await AudioSession.instance;
-      await session.configure(const AudioSessionConfiguration(
+      // バックグラウンド再生OFF時はmixWithOthersを外し、オーディオフォーカスを要求する
+      // （他アプリとの同時再生をやめて、自身の再生に集中させる）
+      final configuration = AudioSessionConfiguration(
         avAudioSessionCategory: AVAudioSessionCategory.playback,
-        avAudioSessionCategoryOptions:
-            AVAudioSessionCategoryOptions.mixWithOthers,
+        avAudioSessionCategoryOptions: backgroundPlayback
+            ? AVAudioSessionCategoryOptions.mixWithOthers
+            : AVAudioSessionCategoryOptions.none,
         avAudioSessionMode: AVAudioSessionMode.defaultMode,
         avAudioSessionRouteSharingPolicy:
             AVAudioSessionRouteSharingPolicy.defaultPolicy,
@@ -60,11 +66,17 @@ class PlayerService {
         ),
         androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
         androidWillPauseWhenDucked: true,
-      ));
+      );
+      await session.configure(configuration);
     } catch (e) {
       // オーディオセッション設定の失敗は再生継続可能なのでログのみ
       debugPrint('[PlayerService] AudioSession設定失敗: $e');
     }
+  }
+
+  /// バックグラウンド再生設定を反映（AudioSessionを再設定する）
+  Future<void> applyBackgroundPlayback(bool enabled) async {
+    await _initAudioSession(backgroundPlayback: enabled);
   }
 
   void _handlePlayerState(PlayerState state) {
@@ -76,12 +88,21 @@ class PlayerService {
     } else if (state.processingState == ProcessingState.loading ||
         state.processingState == ProcessingState.buffering) {
       _updateStatus(PlayerStatus.loading);
-    } else if (state.processingState == ProcessingState.ready ||
-        state.processingState == ProcessingState.idle) {
-      // playing == false かつ ready または idle なら一時停止
-      _updateStatus(state.processingState == ProcessingState.idle
-          ? PlayerStatus.stopped
-          : PlayerStatus.paused);
+    } else if (state.processingState == ProcessingState.ready) {
+      // playing == false かつ ready なら一時停止
+      _updateStatus(PlayerStatus.paused);
+    } else if (state.processingState == ProcessingState.idle) {
+      // 明示的な stop() 以外の idle 遷移は再生エラー
+      // （HLSセグメント取得失敗などは playbackEventStream に流れず
+      //  playerStateStream が idle になることが多い）
+      if (!_isStopping &&
+          (_status == PlayerStatus.playing ||
+              _status == PlayerStatus.loading)) {
+        onError?.call('再生エラー: ストリームが中断されました');
+        _updateStatus(PlayerStatus.error);
+      } else {
+        _updateStatus(PlayerStatus.stopped);
+      }
     }
   }
 
@@ -154,8 +175,10 @@ class PlayerService {
 
   /// 停止
   Future<void> stop() async {
+    _isStopping = true;
     await _player.stop();
     _updateStatus(PlayerStatus.stopped);
+    _isStopping = false;
     _currentStationId = null;
     _currentProgramTitle = null;
   }
@@ -193,6 +216,8 @@ class PlayerService {
 
   /// 解放
   Future<void> dispose() async {
+    // 解放中に _handlePlayerState へ idle が届いてもエラー扱いしない
+    _isStopping = true;
     _stateSubscription?.cancel();
     _positionSubscription?.cancel();
     _eventSubscription?.cancel();

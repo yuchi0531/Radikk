@@ -37,6 +37,47 @@ void main() {
       expect(slot.top, 0);
     });
 
+    test('開始境界ちょうどの番組は非表示', () {
+      // endTime == rangeStartUtc（ちょうど表示開始時刻に終了）
+      final slot = computeProgramSlot(
+        startTime: DateTime.utc(2026, 8, 4, 18),
+        endTime: rangeStartUtc,
+        rangeStartUtc: rangeStartUtc,
+        rangeEndUtc: rangeEndUtc,
+        pxPerHour: pxPerHour,
+        totalHeight: totalHeight,
+      );
+      expect(slot.visible, isFalse);
+    });
+
+    test('終了境界ちょうどの番組は非表示', () {
+      // startTime == rangeEndUtc（ちょうど表示終了時刻に開始）
+      final slot = computeProgramSlot(
+        startTime: rangeEndUtc,
+        endTime: DateTime.utc(2026, 8, 5, 21),
+        rangeStartUtc: rangeStartUtc,
+        rangeEndUtc: rangeEndUtc,
+        pxPerHour: pxPerHour,
+        totalHeight: totalHeight,
+      );
+      expect(slot.visible, isFalse);
+    });
+
+    test('境界ちょうど開始の番組（startTime == rangeStartUtc）は表示される', () {
+      // startTime == rangeStartUtc かつ endTime も範囲内の正常ケース
+      final slot = computeProgramSlot(
+        startTime: rangeStartUtc,
+        endTime: DateTime.utc(2026, 8, 4, 22),
+        rangeStartUtc: rangeStartUtc,
+        rangeEndUtc: rangeEndUtc,
+        pxPerHour: pxPerHour,
+        totalHeight: totalHeight,
+      );
+      expect(slot.visible, isTrue);
+      expect(slot.top, 0);
+      expect(slot.height, closeTo(2 * 60.0, 0.1));
+    });
+
     test('範囲より前の番組は非表示', () {
       final slot = computeProgramSlot(
         startTime: DateTime.utc(2026, 8, 4, 10),

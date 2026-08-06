@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/models/auth_token.dart';
 import '../../core/network/radiko_api_client.dart';
 import '../../core/utils/radiko_time.dart';
@@ -300,3 +301,36 @@ final playerProvider =
   final apiClient = ref.read(apiClientProvider);
   return PlayerNotifier(service, apiClient, ref);
 });
+
+/// バックグラウンド再生設定を管理するNotifier
+class BackgroundPlaybackNotifier extends StateNotifier<bool> {
+  BackgroundPlaybackNotifier(this._service) : super(true) {
+    _load();
+  }
+
+  final PlayerService _service;
+  static const _key = 'background_playback';
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final value = prefs.getBool(_key);
+    if (value != null) {
+      state = value;
+      // 起動時に読み込んだ設定をAudioSessionに反映
+      await _service.applyBackgroundPlayback(value);
+    }
+  }
+
+  Future<void> setEnabled(bool value) async {
+    state = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, value);
+    // 設定変更をAudioSessionに反映
+    await _service.applyBackgroundPlayback(value);
+  }
+}
+
+final backgroundPlaybackProvider =
+    StateNotifierProvider<BackgroundPlaybackNotifier, bool>(
+  (ref) => BackgroundPlaybackNotifier(ref.read(playerServiceProvider)),
+);

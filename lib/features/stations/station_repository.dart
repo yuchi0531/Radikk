@@ -9,6 +9,6 @@ final apiClientProvider = Provider<RadikoApiClient>((ref) => RadikoApiClient());
 final stationsByAreaProvider = FutureProvider.family<List<Station>, String>(
   (ref, areaId) async {
     final client = ref.read(apiClientProvider);
-    return client.getStationsByArea(areaId);
+    return client.getStationsByAreaCached(areaId);
   },
 );

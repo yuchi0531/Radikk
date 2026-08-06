@@ -40,7 +40,9 @@ class MiniPlayer extends ConsumerWidget {
             onTap: () {
               // push で遷移する（go だと ShellRoute が破棄され、
               // 戻る/停止の pop() が GoError になるため）
-              GoRouter.of(context).push('/player');
+              if (GoRouterState.of(context).uri.path != '/player') {
+                GoRouter.of(context).push('/player');
+              }
             },
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/auth/auth_provider.dart';
+import '../../features/player/player_provider.dart';
 import '../../features/theme/theme_provider.dart';
 import '../../core/constants/area_map.dart';
 
@@ -14,22 +14,12 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  bool _backgroundPlayback = true;
   String _version = '0.0.1';
 
   @override
   void initState() {
     super.initState();
-    _loadSettings();
     _loadVersion();
-  }
-
-  Future<void> _loadSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    setState(() {
-      _backgroundPlayback = prefs.getBool('background_playback') ?? true;
-    });
   }
 
   Future<void> _loadVersion() async {
@@ -37,15 +27,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (!mounted) return;
     setState(() {
       _version = info.version;
-    });
-  }
-
-  Future<void> _setBackgroundPlayback(bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('background_playback', value);
-    if (!mounted) return;
-    setState(() {
-      _backgroundPlayback = value;
     });
   }
 
@@ -75,7 +56,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               if (value != null) {
                 final current = ref.read(selectedAreaProvider);
                 if (current != value) {
-                  ref.read(selectedAreaProvider.notifier).state = value;
+                  ref
+                      .read(selectedAreaProvider.notifier)
+                      .setSelectedArea(value);
                   // エリア変更時は新しいエリアで再認証する
                   // （古いエリアのトークンのままだと403になるため）
                   ref.read(authStateProvider.notifier).authenticate();
@@ -117,8 +100,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         SwitchListTile(
           title: const Text('バックグラウンド再生'),
           subtitle: const Text('アプリを閉じても再生を継続します'),
-          value: _backgroundPlayback,
-          onChanged: _setBackgroundPlayback,
+          value: ref.watch(backgroundPlaybackProvider),
+          onChanged: (value) =>
+              ref.read(backgroundPlaybackProvider.notifier).setEnabled(value),
         ),
         const Divider(),
 

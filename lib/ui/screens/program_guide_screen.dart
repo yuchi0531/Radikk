@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/models/program.dart';
@@ -28,11 +30,22 @@ class ProgramGuideScreen extends ConsumerStatefulWidget {
 
 class _ProgramGuideScreenState extends ConsumerState<ProgramGuideScreen> {
   DateTime _selectedDate = DateTime.now();
+  Timer? _timer;
   final ScrollController _hScroll = ScrollController();
   final ScrollController _vScroll = ScrollController();
 
   @override
+  void initState() {
+    super.initState();
+    // 現在放送中の番組が属する番組表の日付で初期化
+    _selectedDate = _currentGuideDate;
+    // 現在時刻ライン・放送中ハイライトを定期更新
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) => setState(() {}));
+  }
+
+  @override
   void dispose() {
+    _timer?.cancel();
     _hScroll.dispose();
     _vScroll.dispose();
     super.dispose();
@@ -42,6 +55,15 @@ class _ProgramGuideScreenState extends ConsumerState<ProgramGuideScreen> {
   DateTime get _jstToday {
     final jstNow = DateTime.now().toUtc().add(jstOffset);
     return DateTime(jstNow.year, jstNow.month, jstNow.day);
+  }
+
+  /// 現在の放送が属する番組表の日付（JST 5時起点）
+  /// 現在JST時刻が 0:00〜4:59 の間は前日が「今日の放送」の属する日
+  DateTime get _currentGuideDate {
+    final jstNow = DateTime.now().toUtc().add(jstOffset);
+    final today = DateTime(jstNow.year, jstNow.month, jstNow.day);
+    // JST 5:00 より前（0:00〜4:59）は前日の放送枠（前日5:00〜当日5:00）に属する
+    return jstNow.hour < 5 ? today.subtract(const Duration(days: 1)) : today;
   }
 
   @override
@@ -164,45 +186,47 @@ class _ProgramGuideScreenState extends ConsumerState<ProgramGuideScreen> {
         ),
         const Divider(height: 1),
         Expanded(
-          child: SingleChildScrollView(
-            controller: _hScroll,
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 時間ラベル列（縦スクロールをグリッドと同期）
-                SizedBox(
-                  width: _timeColumnWidth,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 時間ラベル列（左固定、縦スクロールを局グリッドと同期）
+              SizedBox(
+                width: _timeColumnWidth,
+                child: SingleChildScrollView(
+                  controller: _vScroll,
+                  child: _TimeAxisColumn(
+                    totalHeight: totalHeight,
+                    pxPerHour: _pxPerHour,
+                  ),
+                ),
+              ),
+              // 局グリッド（横スクロール、縦スクロールは時間ラベルと同期）
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: _hScroll,
+                  scrollDirection: Axis.horizontal,
                   child: SingleChildScrollView(
                     controller: _vScroll,
-                    child: _TimeAxisColumn(
-                      totalHeight: totalHeight,
-                      pxPerHour: _pxPerHour,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final station in stations)
+                          _StationColumn(
+                            station: station,
+                            programs: programsByStation[station] ?? [],
+                            rangeStartUtc: rangeStartUtc,
+                            rangeEndUtc: rangeEndUtc,
+                            totalHeight: totalHeight,
+                            pxPerHour: _pxPerHour,
+                            showNowLine: showNowLine,
+                            nowY: nowY,
+                          ),
+                      ],
                     ),
                   ),
                 ),
-                // 局グリッド（縦スクロールを時間ラベルと同期）
-                SingleChildScrollView(
-                  controller: _vScroll,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (final station in stations)
-                        _StationColumn(
-                          station: station,
-                          programs: programsByStation[station] ?? [],
-                          rangeStartUtc: rangeStartUtc,
-                          rangeEndUtc: rangeEndUtc,
-                          totalHeight: totalHeight,
-                          pxPerHour: _pxPerHour,
-                          showNowLine: showNowLine,
-                          nowY: nowY,
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ],

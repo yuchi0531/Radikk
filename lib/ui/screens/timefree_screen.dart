@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/utils/radiko_time.dart';
 import '../../features/auth/auth_provider.dart';
 import '../../features/player/player_provider.dart';
 import '../../features/timefree/timefree_repository.dart';
@@ -14,7 +15,21 @@ class TimefreeScreen extends ConsumerStatefulWidget {
 }
 
 class _TimefreeScreenState extends ConsumerState<TimefreeScreen> {
-  DateTime _selectedDate = DateTime.now().subtract(const Duration(days: 1));
+  DateTime _selectedDate = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    // タイムフリーは放送終了後7日以内のため、デフォルトはJST基準の昨日
+    _selectedDate = _jstYesterday;
+  }
+
+  /// JST基準の「昨日」（タイムフリーは放送終了後7日以内のため、デフォルトは前日）
+  DateTime get _jstYesterday {
+    final jstNow = DateTime.now().toUtc().add(jstOffset);
+    final today = DateTime(jstNow.year, jstNow.month, jstNow.day);
+    return today.subtract(const Duration(days: 1));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -33,7 +48,9 @@ class _TimefreeScreenState extends ConsumerState<TimefreeScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 8),
             itemCount: 7,
             itemBuilder: (context, index) {
-              final date = DateTime.now().subtract(Duration(days: 7 - index));
+              // JST基準の今日（0時）を起点に、7日前〜昨日のチップを生成
+              final jstToday = _jstYesterday.add(const Duration(days: 1));
+              final date = jstToday.subtract(Duration(days: 7 - index));
               final isSelected = _isSameDay(date, _selectedDate);
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),

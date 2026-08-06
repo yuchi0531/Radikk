@@ -19,6 +19,9 @@ class AuthService {
   String? _userId;
   String? _device;
 
+  /// auth1/auth2 間で一致させるアプリバージョン（未設定時のみ生成）
+  String? _appVersion;
+
   Future<void> _ensureDeviceInfo() async {
     if (_userId != null && _device != null) return;
     final prefs = await SharedPreferences.getInstance();
@@ -40,7 +43,7 @@ class AuthService {
   /// POST https://api.radiko.jp/v2/api/auth1
   Future<AuthToken> auth1() async {
     await _ensureDeviceInfo();
-    final appVersion = DeviceInfoGenerator.generateAppVersion();
+    final appVersion = _appVersion ??= DeviceInfoGenerator.generateAppVersion();
 
     final response = await _dio.authClient.get(
       ApiEndpoints.auth1,
@@ -61,7 +64,7 @@ class AuthService {
         int.tryParse(response.headers.value('X-Radiko-KeyLength') ?? '0') ?? 0;
 
     if (token == null || token.isEmpty) {
-      throw AuthException('auth1失败: トークンが取得できませんでした');
+      throw AuthException('認証トークンの取得に失敗しました');
     }
 
     return AuthToken(
@@ -90,7 +93,8 @@ class AuthService {
         options: Options(
           headers: {
             'X-Radiko-App': DeviceConfig.appType,
-            'X-Radiko-App-Version': DeviceInfoGenerator.generateAppVersion(),
+            'X-Radiko-App-Version':
+                _appVersion ??= DeviceInfoGenerator.generateAppVersion(),
             'X-Radiko-Device': _device!,
             'X-Radiko-User': _userId!,
             'X-Radiko-AuthToken': token.token,
@@ -104,7 +108,7 @@ class AuthService {
 
       // レスポンス: "JP13,東京都,tokyo Japan"
       if (body == 'OUT') {
-        throw AuthException('auth2失败: 地域外と判定されました (OUT)');
+        throw AuthException('地域外と判定されました (OUT)');
       }
 
       final parts = body.split(',');
@@ -128,12 +132,12 @@ class AuthService {
       // Dio は非2xxレスポンスを例外化するため、ここでステータスコードを判定する
       final code = e.response?.statusCode;
       if (code == 401 || code == 403) {
-        throw AuthException('auth2失败: 認証エラー (status: $code)');
+        throw AuthException('認証エラーが発生しました (status: $code)');
       }
-      throw AuthException('auth2失败: ${e.message}');
+      throw AuthException('認証に失敗しました: ${e.message}');
     } catch (e) {
       if (e is AuthException) rethrow;
-      throw AuthException('auth2失败: $e');
+      throw AuthException('認証に失敗しました: $e');
     }
   }
 

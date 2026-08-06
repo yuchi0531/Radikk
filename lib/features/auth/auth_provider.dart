@@ -1,9 +1,34 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/models/auth_token.dart';
 import 'auth_service.dart';
 
+/// 選択中のエリアIDを管理するNotifier（SharedPreferencesに永続化）
+class SelectedArea extends Notifier<String> {
+  static const _key = 'selected_area';
+  static String _cached = 'JP13'; // 起動時に読み込んだ値を保持
+
+  @override
+  String build() => _cached;
+
+  Future<void> setSelectedArea(String value) async {
+    _cached = value;
+    state = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_key, value);
+  }
+
+  /// 起動時（main()）に呼び出して保存されたエリアを復元する
+  static Future<void> restore() async {
+    final prefs = await SharedPreferences.getInstance();
+    _cached = prefs.getString(_key) ?? 'JP13';
+  }
+}
+
 /// 選択中のエリアID
-final selectedAreaProvider = StateProvider<String>((ref) => 'JP13');
+final selectedAreaProvider = NotifierProvider<SelectedArea, String>(
+  SelectedArea.new,
+);
 
 /// AuthService インスタンス
 final authServiceProvider = Provider<AuthService>((ref) => AuthService());
@@ -14,6 +39,9 @@ final authStateProvider = AsyncNotifierProvider<AuthNotifier, AuthToken?>(
 );
 
 class AuthNotifier extends AsyncNotifier<AuthToken?> {
+  /// 実行中の認証（単一フライト化）
+  Future<void>? _inFlight;
+
   @override
   Future<AuthToken?> build() async {
     // 起動時にキャッシュされたトークンを復元
@@ -26,9 +54,13 @@ class AuthNotifier extends AsyncNotifier<AuthToken?> {
     return null;
   }
 
-  /// 認証実行
+  /// 認証実行（同時呼び出しは単一フライトに集約）
   /// 認証の完了前にエリアが変更された場合は、最新のエリアで再認証する
-  Future<void> authenticate() async {
+  Future<void> authenticate() {
+    return _inFlight ??= _doAuthenticate().whenComplete(() => _inFlight = null);
+  }
+
+  Future<void> _doAuthenticate() async {
     state = const AsyncLoading();
     final service = ref.read(authServiceProvider);
 
