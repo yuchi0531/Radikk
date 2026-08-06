@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dynamic_color/dynamic_color.dart';
 import 'package:go_router/go_router.dart';
 import 'ui/screens/live_screen.dart';
 import 'ui/screens/program_guide_screen.dart';
@@ -145,13 +146,31 @@ class RadikkApp extends ConsumerWidget {
     final router = ref.watch(routerProvider);
     final themeMode = ref.watch(themeModeProvider);
 
-    return MaterialApp.router(
-      title: 'Radikk',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
-      themeMode: themeMode,
-      routerConfig: router,
+    return DynamicColorBuilder(
+      builder: (lightDynamic, darkDynamic) {
+        // Android 12+ なら Monet カラー、それ以外は null
+        final lightScheme = lightDynamic ??
+            ColorScheme.fromSeed(
+              seedColor: AppTheme.primaryBlue,
+              // Express トーンで個性的な色生成（Monet 非対応環境向け）
+              dynamicSchemeVariant: DynamicSchemeVariant.expressive,
+            );
+        final darkScheme = darkDynamic ??
+            ColorScheme.fromSeed(
+              seedColor: AppTheme.primaryBlue,
+              brightness: Brightness.dark,
+              dynamicSchemeVariant: DynamicSchemeVariant.expressive,
+            );
+
+        return MaterialApp.router(
+          title: 'Radikk',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.lightFromScheme(lightScheme),
+          darkTheme: AppTheme.darkFromScheme(darkScheme),
+          themeMode: themeMode,
+          routerConfig: router,
+        );
+      },
     );
   }
 }

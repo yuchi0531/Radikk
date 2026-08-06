@@ -18,25 +18,21 @@ class AppTheme {
   static const Color darkTextSecondary = Color(0xFFAAAAAA);
   static const Color darkDivider = Color(0xFF3A3A3A);
 
-  static ThemeData get lightTheme {
+  /// 指定した ColorScheme からライトテーマを構築する（Monetダイナミックカラー対応）
+  static ThemeData lightFromScheme(ColorScheme scheme) {
+    final primary = scheme.primary;
     return ThemeData(
       useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: primaryBlue,
-        brightness: Brightness.light,
-        primary: primaryBlue,
-        secondary: accentOrange,
-        surface: surfaceWhite,
-      ),
+      colorScheme: scheme,
       scaffoldBackgroundColor: backgroundGray,
-      appBarTheme: const AppBarTheme(
-        backgroundColor: primaryBlue,
+      appBarTheme: AppBarTheme(
+        backgroundColor: primary,
         foregroundColor: Colors.white,
         elevation: 0,
         centerTitle: true,
       ),
-      bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-        selectedItemColor: primaryBlue,
+      bottomNavigationBarTheme: BottomNavigationBarThemeData(
+        selectedItemColor: primary,
         unselectedItemColor: textSecondary,
         type: BottomNavigationBarType.fixed,
         backgroundColor: surfaceWhite,
@@ -72,18 +68,12 @@ class AppTheme {
     );
   }
 
-  static ThemeData get darkTheme {
+  /// 指定した ColorScheme からダークテーマを構築する（Monetダイナミックカラー対応）
+  static ThemeData darkFromScheme(ColorScheme scheme) {
+    final primary = scheme.primary;
     return ThemeData(
       useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: primaryBlue,
-        brightness: Brightness.dark,
-        primary: const Color(0xFF4D9CEA),
-        secondary: accentOrange,
-        surface: darkSurface,
-        onPrimary: Colors.white,
-        onSurface: darkTextPrimary,
-      ),
+      colorScheme: scheme,
       scaffoldBackgroundColor: darkBackground,
       appBarTheme: AppBarTheme(
         backgroundColor: darkSurface,
@@ -92,7 +82,7 @@ class AppTheme {
         centerTitle: true,
       ),
       bottomNavigationBarTheme: BottomNavigationBarThemeData(
-        selectedItemColor: const Color(0xFF4D9CEA),
+        selectedItemColor: primary,
         unselectedItemColor: darkTextSecondary,
         type: BottomNavigationBarType.fixed,
         backgroundColor: darkSurface,

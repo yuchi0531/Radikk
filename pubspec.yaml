@@ -23,6 +23,7 @@ dependencies:
   equatable: ^2.0.7
   audio_session: ^0.1.25
   package_info_plus: ^10.2.1
+  dynamic_color: ^1.8.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
