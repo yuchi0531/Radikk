@@ -114,12 +114,13 @@ class PlayerNotifier extends StateNotifier<PlayerState> {
       // 認証状態からトークンを取得（なければ認証を実行）
       final token = await _getValidToken();
 
-      final playlistUrl =
-          await _apiClient.getPlaylistCreateUrl(stationId, timefree: false);
-
-      // ライブストリームURL構築（検証済み仕様）
-      // ?station_id={id}&l=300&type=b&lsid={lsid}
-      final streamUrl = _buildLiveStreamUrl(playlistUrl, stationId);
+      final lsid = _generateLsid();
+      final streamUrl = await _apiClient.getLiveMediaListUrl(
+        stationId: stationId,
+        authToken: token.token,
+        areaId: token.areaId,
+        lsid: lsid,
+      );
 
       await _service.playLive(
         url: streamUrl,
@@ -160,18 +161,16 @@ class PlayerNotifier extends StateNotifier<PlayerState> {
       // 認証状態からトークンを取得（なければ認証を実行）
       final token = await _getValidToken();
 
-      final playlistUrl =
-          await _apiClient.getPlaylistCreateUrl(stationId, timefree: true);
       final fromStr = formatRadikoDateTime(startTime);
       final toStr = formatRadikoDateTime(endTime);
-
-      // タイムフリーストリームURL構築（検証済み仕様）
-      // ?station_id={id}&ft={from}&to={to}&start_at={from}&end_at={to}&type=b&l=300&seek={from}&lsid={lsid}
-      final url = _buildTimefreeStreamUrl(
-        playlistUrl,
-        stationId,
-        fromStr,
-        toStr,
+      final lsid = _generateLsid();
+      final url = await _apiClient.getTimefreeMediaListUrl(
+        stationId: stationId,
+        authToken: token.token,
+        areaId: token.areaId,
+        lsid: lsid,
+        fromStr: fromStr,
+        toStr: toStr,
       );
 
       await _service.playTimefree(
@@ -214,30 +213,6 @@ class PlayerNotifier extends StateNotifier<PlayerState> {
       sb.write('0123456789abcdef'[random.nextInt(16)]);
     }
     return sb.toString();
-  }
-
-  /// ライブストリームURL構築（検証済み仕様）
-  /// ?station_id={id}&l=300&type=b&lsid={lsid}
-  String _buildLiveStreamUrl(String playlistUrl, String stationId) {
-    final separator = playlistUrl.contains('?') ? '&' : '?';
-    return '$playlistUrl${separator}station_id=$stationId'
-        '&l=300&type=b&lsid=${_generateLsid()}';
-  }
-
-  /// タイムフリーストリームURL構築（検証済み仕様）
-  /// ?station_id={id}&ft={from}&to={to}&start_at={from}&end_at={to}&type=b&l=300&seek={from}&lsid={lsid}
-  String _buildTimefreeStreamUrl(
-    String playlistUrl,
-    String stationId,
-    String fromStr,
-    String toStr,
-  ) {
-    final separator = playlistUrl.contains('?') ? '&' : '?';
-    return '$playlistUrl${separator}station_id=$stationId'
-        '&ft=$fromStr&to=$toStr'
-        '&start_at=$fromStr&end_at=$toStr'
-        '&type=b&l=300&seek=$fromStr'
-        '&lsid=${_generateLsid()}';
   }
 
   /// エラーメッセージをユーザーフレンドリーに整形

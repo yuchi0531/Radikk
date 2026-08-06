@@ -130,6 +130,87 @@ class RadikoApiClient {
     return playlistUrl;
   }
 
+  /// ライブ再生用のメディアプレイリスト(medialist) URLを直接取得する
+  /// マスタープレイリスト(#EXT-X-STREAM-INF)を介さず、メディアプレイリストを返す
+  Future<String> getLiveMediaListUrl({
+    required String stationId,
+    required String authToken,
+    String? areaId,
+    required String lsid,
+  }) async {
+    final playlistUrl = await getPlaylistCreateUrl(stationId, timefree: false);
+    final separator = playlistUrl.contains('?') ? '&' : '?';
+    final m3u8Url = '$playlistUrl${separator}station_id=$stationId'
+        '&l=300&type=b&lsid=$lsid';
+
+    return _fetchMediaListUrl(m3u8Url, authToken, areaId);
+  }
+
+  /// タイムフリー再生用のメディアプレイリスト URL を直接取得する
+  Future<String> getTimefreeMediaListUrl({
+    required String stationId,
+    required String authToken,
+    String? areaId,
+    required String lsid,
+    required String fromStr,
+    required String toStr,
+  }) async {
+    final playlistUrl = await getPlaylistCreateUrl(stationId, timefree: true);
+    final separator = playlistUrl.contains('?') ? '&' : '?';
+    final m3u8Url = '$playlistUrl${separator}station_id=$stationId'
+        '&ft=$fromStr&to=$toStr'
+        '&start_at=$fromStr&end_at=$toStr'
+        '&type=b&l=300&seek=$fromStr'
+        '&lsid=$lsid';
+
+    return _fetchMediaListUrl(m3u8Url, authToken, areaId);
+  }
+
+  /// m3u8 を取得し、#EXT-X-STREAM-INF の直後の URL（メディアプレイリスト）を返す
+  Future<String> _fetchMediaListUrl(
+    String m3u8Url,
+    String authToken,
+    String? areaId,
+  ) async {
+    final response = await _safeApiCall(() => _dio.authClient.get(
+          m3u8Url,
+          options: Options(headers: {
+            'X-Radiko-AuthToken': authToken,
+            'X-Radiko-AreaId': ?areaId,
+          }),
+        ));
+
+    final body = response.data.toString();
+    // #EXT-X-STREAM-INF の行を探し、次の行がメディアプレイリスト URL
+    final lines = body.split('\n');
+    String? mediaUrl;
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+        // 次の空でない行が URL
+        for (var j = i + 1; j < lines.length; j++) {
+          final candidate = lines[j].trim();
+          if (candidate.isNotEmpty && !candidate.startsWith('#')) {
+            mediaUrl = candidate;
+            break;
+          }
+        }
+        break;
+      }
+    }
+
+    // 万が一マスタープレイリストでない場合（直接メディアプレイリストが返る場合）は、
+    // #EXTINF を含む行があれば元のURLをそのまま使う
+    if (mediaUrl == null) {
+      if (body.contains('#EXTINF')) {
+        mediaUrl = m3u8Url;
+      } else {
+        throw ApiException('メディアプレイリストURLが見つかりません', 0);
+      }
+    }
+
+    return mediaUrl;
+  }
+
   /// 日別番組表をキャッシュするための静的フィールド
   static final Map<String, List<Program>> _dailyCache = {};
   static final Map<String, DateTime> _dailyCacheAt = {};
