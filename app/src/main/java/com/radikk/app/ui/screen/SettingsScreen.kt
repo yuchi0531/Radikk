@@ -1,6 +1,8 @@
 package com.radikk.app.ui.screen
 
 import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,12 +14,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -61,13 +65,12 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
             // エリア選択
             Text(
                 text = "エリア",
                 style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(bottom = 8.dp),
             )
             AreaSelector(
                 selectedAreaId = settings.areaId,
@@ -116,6 +119,14 @@ fun SettingsScreen(
                 title = "ダイナミックカラー",
                 checked = settings.dynamicColor,
                 onCheckedChange = { viewModel.setDynamicColor(it) },
+            )
+
+            HorizontalDivider()
+
+            // ダウンロード先
+            DownloadPathSection(
+                downloadPath = settings.downloadPath,
+                onSelect = { viewModel.setDownloadPath(it) },
             )
 
             HorizontalDivider()
@@ -205,6 +216,57 @@ private fun ReminderRow(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/**
+ * ダウンロード先フォルダ設定セクション。
+ * SAF (Storage Access Framework) のフォルダ選択 (ACTION_OPEN_DOCUMENT_TREE) で選んだ
+ * tree Uri を保存する。未設定の場合はアプリ固有領域にフォールバックする。
+ */
+@Composable
+private fun DownloadPathSection(
+    downloadPath: String?,
+    onSelect: (android.net.Uri) -> Unit,
+) {
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        uri?.let(onSelect)
+    }
+
+    Text(
+        text = "ダウンロード",
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+    )
+    Text(
+        text = "ダウンロード先フォルダ",
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(bottom = 4.dp),
+    )
+    val displayPath = downloadPath?.let { uriString ->
+        runCatching {
+            android.net.Uri.parse(uriString)
+                .let { uri -> androidx.documentfile.provider.DocumentFile.fromTreeUri(context, uri)?.name }
+                ?: uriString
+        }.getOrNull() ?: uriString
+    }
+    Text(
+        text = if (downloadPath.isNullOrBlank()) "未設定 (アプリ内フォルダ)"
+        else displayPath ?: "未設定 (アプリ内フォルダ)",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
+    OutlinedButton(onClick = { launcher.launch(null) }) {
+        Icon(
+            imageVector = Icons.Filled.Folder,
+            contentDescription = null,
+            modifier = Modifier.padding(end = 8.dp),
+        )
+        Text("ダウンロード先を選択")
     }
 }
 

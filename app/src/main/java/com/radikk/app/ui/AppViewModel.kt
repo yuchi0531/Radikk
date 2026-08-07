@@ -1,12 +1,14 @@
 package com.radikk.app.ui
 
 import android.app.Application
+import android.content.Intent
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.radikk.app.RadikkApplication
 import com.radikk.app.data.datastore.AppSettings
 import com.radikk.app.data.datastore.ThemeMode
-import com.radikk.app.data.favorite.FavoriteEntry
+import com.radikk.app.data.download.DownloadedProgram
 import com.radikk.app.data.model.AuthSession
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
@@ -29,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import java.time.Instant
 
 /**
@@ -45,7 +48,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val reminderRepo = app.reminderRepository
     private val timefreeCache = app.timefreeCacheRepository
     private val programCache = app.programCacheRepository
-    private val favoriteRepo = app.favoriteRepository
+    private val downloadRepo = app.downloadRepository
+    private val downloadManager = app.downloadManager
 
     val radikoPlayer = RadikoPlayer(application)
 
@@ -114,14 +118,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _reminders = MutableStateFlow<List<StoredReminder>>(emptyList())
     val reminders: StateFlow<List<StoredReminder>> = _reminders.asStateFlow()
 
-    // --- お気に入り番組 ---
-    val favorites: StateFlow<List<FavoriteEntry>> = favoriteRepo.favorites.stateIn(
+    // --- ダウンロード済み番組 ---
+    val downloads: StateFlow<List<DownloadedProgram>> = downloadRepo.downloads.stateIn(
         viewModelScope, SharingStarted.Eagerly, emptyList()
     )
+
+    /** ダウンロード処理中の番組キー (stationId|ftEpochMillis)。二重ダウンロード防止用。 */
+    private val downloadingKeys = mutableSetOf<String>()
 
     init {
         // PlaybackService に共有 MediaSession を公開 (バックグラウンド再生用)
         PlaybackService.sharedMediaSession = radikoPlayer.mediaSession
+
+        // ダウンロード一覧の上限 (MAX_ENTRIES) 超過で捨てられたエントリのファイルを削除する
+        downloadRepo.onEvicted = { evicted ->
+            evicted.forEach { deleteDownloadedFile(it.filePath) }
+        }
 
         viewModelScope.launch {
             settings.settings.collect { s ->
@@ -654,84 +666,127 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- お気に入り番組 ---
+    // --- ダウンロード ---
 
-    /** 指定番組がお気に入り登録済みか (StateFlow から同期的に読む)。 */
-    fun isFavorite(stationId: String, ftEpochMillis: Long): Boolean =
-        favorites.value.any { it.stationId == stationId && it.ftEpochMillis == ftEpochMillis }
+    /** 指定番組がダウンロード済みか。 */
+    fun isDownloaded(stationId: String, ftEpochMillis: Long): Boolean =
+        downloads.value.any { it.stationId == stationId && it.ftEpochMillis == ftEpochMillis }
 
-    /** お気に入り登録/解除を切り替える。 */
-    fun toggleFavorite(station: Station, program: Program) {
-        val ft = program.ft.toEpochMilli()
-        if (isFavorite(station.id, ft)) {
-            removeFavorite(station.id, ft)
-        } else {
-            addFavorite(
-                FavoriteEntry(
+    /** タイムフリー番組をダウンロードする。 */
+    fun downloadTimefree(station: Station, program: Program) {
+        viewModelScope.launch {
+            _errorMessage.value = null
+            // 二重タップ・既存ダウンロードを防ぐ。launch は Main から始まるため、
+            // このガードは最初の suspend (auth.getSession) より前に同期的に実行される。
+            val key = "${station.id}|${program.ft.toEpochMilli()}"
+            if (downloadingKeys.contains(key) || isDownloaded(station.id, program.ft.toEpochMilli())) {
+                _errorMessage.value = "ダウンロード中またはダウンロード済みです"
+                return@launch
+            }
+            downloadingKeys.add(key)
+            try {
+                val session = auth.getSession(_selectedAreaId.value)
+                val entry = downloadManager.downloadProgram(
                     stationId = station.id,
                     stationName = station.name,
                     programTitle = program.title,
-                    ftEpochMillis = ft,
-                    toEpochMillis = program.to.toEpochMilli(),
-                    addedAtEpochMillis = Instant.now().toEpochMilli(),
-                )
-            )
-        }
-    }
-
-    /** お気に入りに追加する。 */
-    fun addFavorite(entry: FavoriteEntry) {
-        viewModelScope.launch { favoriteRepo.add(entry) }
-    }
-
-    /** お気に入りから削除する。 */
-    fun removeFavorite(stationId: String, ftEpochMillis: Long) {
-        viewModelScope.launch { favoriteRepo.remove(stationId, ftEpochMillis) }
-    }
-
-    /** お気に入りエントリを再生する (タイムフリー再生と同等)。 */
-    fun playFavorite(entry: FavoriteEntry) {
-        viewModelScope.launch {
-            _errorMessage.value = null
-            try {
-                val session = auth.getSession(_selectedAreaId.value)
-                radikoPlayer.setAuth(session.token, session.areaId)
-                // シーク時のプレイリスト再構築用に現在のタイムフリー再生コンテキストを保持する
-                timefreeContext = TimefreeSeekContext(
-                    station = Station(
-                        id = entry.stationId,
-                        name = entry.stationName,
-                        asciiName = "",
-                        areafree = false,
-                        timefree = true,
-                        areaIds = emptyList(),
-                        logoUrl = null,
-                    ),
-                    ft = Instant.ofEpochMilli(entry.ftEpochMillis),
-                    to = Instant.ofEpochMilli(entry.toEpochMillis),
+                    ft = program.ft,
+                    to = program.to,
                     token = session.token,
+                    targetDir = downloadTargetDir(),
+                    targetTreeUri = downloadTargetTreeUri(),
+                    context = app,
+                    imgUrl = program.imgUrl,
+                    // 取得途中でトークンが失効した場合 (401) は getSession で再認証して
+                    // 新しいトークンでそのウィンドウ / セグメントを再試行する
+                    freshTokenProvider = { runCatching { auth.getSession(_selectedAreaId.value).token }.getOrNull() },
                 )
-
-                val resolver = StreamUrlResolver(app.apiClient)
-                val medialistUrl = resolver.resolveTimefreeMedialistUrl(
-                    stationId = entry.stationId,
-                    token = session.token,
-                    from = Instant.ofEpochMilli(entry.ftEpochMillis),
-                    to = Instant.ofEpochMilli(entry.toEpochMillis),
-                )
-                val durationMs = (entry.toEpochMillis - entry.ftEpochMillis).coerceAtLeast(0L)
-                radikoPlayer.playMedialist(medialistUrl, durationOverrideMs = durationMs)
-
-                _nowPlaying.value = NowPlaying(
-                    stationId = entry.stationId,
-                    stationName = entry.stationName,
-                    title = entry.programTitle,
-                    isTimefree = true,
-                )
+                _errorMessage.value = "ダウンロード完了: ${program.title}"
             } catch (e: Exception) {
-                _errorMessage.value = e.message ?: "お気に入り番組を再生できませんでした"
+                _errorMessage.value = e.message ?: "ダウンロードに失敗しました"
+            } finally {
+                downloadingKeys.remove(key)
             }
         }
+    }
+
+    /** ダウンロード先ディレクトリ。設定でファイルシステムのパスがあればそれ、なければアプリ固有領域。 */
+    private fun downloadTargetDir(): File {
+        val custom = _settings.value.downloadPath
+        if (!custom.isNullOrBlank() && !custom.startsWith("content://")) {
+            val f = File(custom)
+            return f
+        }
+        return app.getExternalFilesDir(null) ?: app.filesDir
+    }
+
+    /** ダウンロード先の SAF tree Uri。設定が content:// の tree Uri ならそれを返す。 */
+    private fun downloadTargetTreeUri(): Uri? {
+        val custom = _settings.value.downloadPath
+        if (custom != null && custom.startsWith("content://")) {
+            return runCatching { Uri.parse(custom) }.getOrNull()
+        }
+        return null
+    }
+
+    /** ダウンロード済み番組を再生する (ローカル .aac を直接再生)。 */
+    fun playDownloaded(entry: DownloadedProgram) {
+        if (!downloadedFileExists(entry.filePath)) {
+            _errorMessage.value = "ファイルが見つかりません: ${entry.programTitle}"
+            return
+        }
+        timefreeContext = null
+        // ローカルファイルは ExoPlayer が実ファイルから duration を読むため上書きは不要
+        // (effectiveDuration がローカル再生時は実ファイルの duration を優先する)
+        radikoPlayer.playLocalFile(entry.filePath)
+        _nowPlaying.value = NowPlaying(
+            stationId = entry.stationId,
+            stationName = entry.stationName,
+            title = entry.programTitle,
+            isTimefree = true,
+            // ダウンロード元の番組ロゴ (無ければフルプレイヤーが局ロゴへフォールバック)
+            programImgUrl = entry.imgUrl,
+        )
+    }
+
+    /** ダウンロードを削除する (メタデータ + ファイル)。 */
+    fun deleteDownload(stationId: String, ftEpochMillis: Long) {
+        viewModelScope.launch {
+            val entry = downloads.value.firstOrNull { it.stationId == stationId && it.ftEpochMillis == ftEpochMillis }
+                ?: return@launch
+            val ok = deleteDownloadedFile(entry.filePath)
+            if (ok) {
+                downloadRepo.remove(stationId, ftEpochMillis)
+            } else {
+                _errorMessage.value = "ファイルを削除できませんでした"
+            }
+        }
+    }
+
+    /** ダウンロード済みファイルが存在するか。content:// Uri の場合は問い合わせで確認する。 */
+    private fun downloadedFileExists(filePath: String): Boolean {
+        if (filePath.startsWith("content://")) {
+            return runCatching {
+                app.contentResolver.openInputStream(Uri.parse(filePath))?.close() == Unit
+            }.getOrDefault(false)
+        }
+        return File(filePath).exists()
+    }
+
+    /**
+     * ダウンロード済みファイルを削除する。
+     * content:// Uri の場合は contentResolver 経由、それ以外は File API で削除する。
+     * @return true = 削除成功 (または既に存在しない), false = 削除失敗
+     */
+    private fun deleteDownloadedFile(filePath: String): Boolean {
+        return runCatching {
+            if (filePath.startsWith("content://")) {
+                app.contentResolver.delete(Uri.parse(filePath), null, null) > 0
+            } else {
+                val f = File(filePath)
+                !f.exists() || f.delete()
+            }
+        }.getOrDefault(false)
     }
 
     /** 再生エラーを UI に反映する。 */
@@ -795,6 +850,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setDynamicColor(enabled: Boolean) {
         viewModelScope.launch { settings.setDynamicColor(enabled) }
+    }
+
+    /**
+     * ダウンロード先を SAF (Storage Access Framework) の tree Uri で設定する。
+     *
+     * ユーザーがフォルダ選択 (ACTION_OPEN_DOCUMENT_TREE) で選んだ tree Uri の
+     * 永続アクセス権を取得し、uri.toString() を DataStore に保存する。
+     * アプリ再起動後も書き込みできるよう takePersistableUriPermission で
+     * READ/WRITE の永続許可を取る。
+     *
+     * なお、当初計画していた MANAGE_EXTERNAL_STORAGE (全ファイルアクセス権) は
+     * 使わない。SAF はスコープ付きアクセスで特別な権限が不要なため、
+     * プライバシー表示 (Play ストア審査) やユーザーへの説明を避けられる。
+     * 未設定の場合は [downloadTargetDir] がアプリ固有領域にフォールバックする。
+     */
+    fun setDownloadPath(uri: Uri) {
+        viewModelScope.launch {
+            try {
+                app.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+                settings.setDownloadPath(uri.toString())
+                _errorMessage.value = "ダウンロード先を設定しました"
+            } catch (e: Exception) {
+                _errorMessage.value = "ダウンロード先を設定できませんでした: ${e.message}"
+            }
+        }
     }
 
     /** 認証キャッシュ削除 */

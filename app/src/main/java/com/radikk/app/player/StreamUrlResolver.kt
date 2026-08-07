@@ -94,6 +94,44 @@ class StreamUrlResolver(
     }
 
     /**
+     * medialist の body から全セグメント URL を抽出する。
+     * #EXTINF: に続く行がセグメント URL。コメント行・空行・マスタープレイリスト行をスキップ。
+     * 実データではセグメント行は http(s) で始まるため、#EXTINF が無くても
+     * http で始まる行はセグメントとして扱う (堅牢性のためのフォールバック)。
+     * @return セグメント URL のリスト (URL 相対の場合は medialist ベースで解決)
+     */
+    fun extractSegmentUrls(medialistBody: String, medialistUrl: String): List<String> {
+        val lines = medialistBody.lineSequence().map { it.trim() }.toList()
+        val segments = mutableListOf<String>()
+        var lastWasExtinf = false
+        for (line in lines) {
+            if (line.isEmpty() || line.startsWith("#")) {
+                // #EXTINF: に続く行がセグメント URL
+                lastWasExtinf = line.startsWith("#EXTINF:")
+                continue
+            }
+            // セグメント URL (絶対 URL、または相対パス / プロトコル相対 // / クエリ相対 ?)
+            if (lastWasExtinf || line.startsWith("http")) {
+                resolveSegmentUrl(medialistUrl, line)?.let { segments.add(it) }
+            }
+            lastWasExtinf = false
+        }
+        return segments
+    }
+
+    /**
+     * セグメント行を絶対 URL に解決する。
+     * - http(s) で始まる行はそのまま
+     * - それ以外は [java.net.URI.resolve] で解決する (RFC 3986 準拠)。
+     *   `//host/...` (プロトコル相対)、`?query` (クエリ相対)、`path/seg.aac` (パス相対) を正しく扱える。
+     * - 解決できない行は null (呼び出し側でスキップ)
+     */
+    private fun resolveSegmentUrl(medialistUrl: String, line: String): String? {
+        if (line.startsWith("http")) return line
+        return runCatching { java.net.URI(medialistUrl).resolve(line).toString() }.getOrNull()
+    }
+
+    /**
      * station stream XML からライブ用 playlist_create_url の候補リストを取得する。
      * ライブ用 (timefree="0") の URL を全て返す (優先順位付き)。
      *

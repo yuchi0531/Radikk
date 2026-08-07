@@ -1,6 +1,7 @@
 package com.radikk.app.player
 
 import android.content.Context
+import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.AudioAttributes
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * radiko 再生エンジン (Media3/ExoPlayer ラッパー)。
@@ -100,6 +102,14 @@ class RadikoPlayer(
     private var playAnchorPositionMs: Long = 0L
     private var isPlayingState = false
 
+    /**
+     * ローカルファイル (ダウンロード済み .aac) 再生中かどうか。
+     * true の間は ExoPlayer ネイティブの currentPosition / seekTo / duration をそのまま使い、
+     * HLS スライディングウィンドウ用のアンカー計算を一切行わない。
+     * (アンカー計算をローカルファイルに適用すると、シークしても表示位置が先頭に戻る不具合になる)
+     */
+    private var nativePosition = false
+
     private var dataSourceFactory: DefaultHttpDataSource.Factory? = null
 
     /** 位置ポーリング用スコープ (再生中に positionMs を定期的に更新する) */
@@ -165,6 +175,7 @@ class RadikoPlayer(
      */
     fun playMedialist(medialistUrl: String, durationOverrideMs: Long? = null, startPositionMs: Long = 0L) {
         this.durationOverrideMs = durationOverrideMs
+        this.nativePosition = false
         this.playAnchorElapsed = SystemClock.elapsedRealtime()
         this.playAnchorPositionMs = startPositionMs
         this.isPlayingState = false
@@ -191,9 +202,38 @@ class RadikoPlayer(
         _player.play()
     }
 
+    /**
+     * ローカル音声ファイル (.aac 等) を直接再生する (ダウンロード済み番組用)。
+     *
+     * HLS (medialist) を経由しないため認証ヘッダーは不要。ローカルファイルは
+     * スライディングウィンドウが無いため、位置・シーク・duration はすべて
+     * ExoPlayer ネイティブの値をそのまま使う (アンカー計算は無効)。
+     *
+     * @param filePath ローカルファイルの絶対パス、または SAF (content://) の Uri 文字列
+     * @param durationOverrideMs シークバー表示用の duration 上書き値 (番組全体の長さ)。
+     *                           null なら ExoPlayer が実ファイルから duration を読む。
+     */
+    fun playLocalFile(filePath: String, durationOverrideMs: Long? = null) {
+        this.durationOverrideMs = durationOverrideMs
+        this.nativePosition = true
+        // アンカーは HLS 専用だが、念のため無害な値にリセットしておく
+        playAnchorElapsed = SystemClock.elapsedRealtime()
+        playAnchorPositionMs = 0L
+        isPlayingState = false
+        val mediaItem = if (filePath.startsWith("content://")) {
+            MediaItem.fromUri(Uri.parse(filePath))
+        } else {
+            MediaItem.fromUri(Uri.fromFile(File(filePath)))
+        }
+        _uiState.value = _uiState.value.copy(isLoading = true, error = null)
+        _player.setMediaItem(mediaItem)
+        _player.prepare()
+        _player.play()
+    }
+
     /** 一時停止 */
     fun pause() {
-        if (_player.isPlaying) {
+        if (!nativePosition && _player.isPlaying) {
             // 停止位置を確定してから pause
             playAnchorPositionMs = currentLogicalPosition()
         }
@@ -203,9 +243,11 @@ class RadikoPlayer(
 
     /** 再生再開 */
     fun play() {
-        // 再開: アンカーを現在位置に再設定
-        playAnchorPositionMs = currentLogicalPosition()
-        playAnchorElapsed = SystemClock.elapsedRealtime()
+        if (!nativePosition) {
+            // 再開: アンカーを現在位置に再設定
+            playAnchorPositionMs = currentLogicalPosition()
+            playAnchorElapsed = SystemClock.elapsedRealtime()
+        }
         isPlayingState = true
         _player.play()
     }
@@ -213,6 +255,11 @@ class RadikoPlayer(
     /** シーク (タイムフリー用) */
     fun seekTo(positionMs: Long) {
         val clamped = positionMs.coerceAtLeast(0L)
+        if (nativePosition) {
+            // ローカルファイル: ExoPlayer ネイティブシーク。アンカー操作は不要。
+            runCatching { _player.seekTo(clamped) }
+            return
+        }
         // ExoPlayer へのシークはウィンドウ基準 (radiko は ft がウィンドウ先頭)。
         // 論理位置はシーク後にアンカーを再設定して表現する。
         runCatching { _player.seekTo(clamped) }
@@ -222,6 +269,10 @@ class RadikoPlayer(
 
     /** 現在の論理再生位置 (番組先頭からのミリ秒)。スライディングウィンドウ非依存。 */
     private fun currentLogicalPosition(): Long {
+        if (nativePosition) {
+            // ローカルファイルは ExoPlayer ネイティブ位置をそのまま使う (HLS のスライディングウィンドウ問題がない)
+            return runCatching { _player.currentPosition }.getOrNull()?.coerceAtLeast(0L) ?: playAnchorPositionMs
+        }
         if (isPlayingState) {
             return (playAnchorPositionMs + (SystemClock.elapsedRealtime() - playAnchorElapsed))
                 .coerceAtLeast(0L)
@@ -260,6 +311,11 @@ class RadikoPlayer(
 
     /** 表示用の duration を安全に計算する (C.TIME_UNSET など無効値は 0 に丸める)。 */
     private fun effectiveDuration(): Long {
+        if (nativePosition) {
+            // ローカルファイル: 実ファイルの duration を優先する (truncated ダウンロードは短い実長を表示)
+            val d = runCatching { _player.duration }.getOrNull() ?: 0L
+            if (d > 0) return d
+        }
         durationOverrideMs?.let { if (it > 0) return it }
         val d = _player.duration
         return if (d > 0) d else 0L
@@ -271,7 +327,8 @@ class RadikoPlayer(
         val isPlaying = _player.isPlaying
         val isReady = _player.playbackState == Player.STATE_READY
         // 再生へ遷移した直後はアンカーを現在時刻で再設定する (スライディングウィンドウ非依存)。
-        if (isPlaying && !isPlayingState) {
+        // ローカルファイルは ExoPlayer ネイティブ位置を使うためアンカー再設定は不要。
+        if (isPlaying && !isPlayingState && !nativePosition) {
             playAnchorElapsed = SystemClock.elapsedRealtime()
         }
         isPlayingState = isPlaying

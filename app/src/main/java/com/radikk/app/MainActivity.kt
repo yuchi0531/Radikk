@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.NavigationBar
@@ -126,8 +127,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppScaffold(viewModel: AppViewModel) {
     var selectedTab by remember { mutableStateOf(BottomTab.HOME) }
-    // ホームの「すべて見る」→ タイムフリーのお気に入りタブを開くためのフラグ
-    var timefreeOpenFavorites by remember { mutableStateOf(false) }
+    // ホームの「すべて見る」→ タイムフリーのダウンロードタブを開くためのフラグ
+    var timefreeOpenDownloads by remember { mutableStateOf(false) }
     var showFullPlayer by remember { mutableStateOf(false) }
     val errorMessage by viewModel.errorMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -170,6 +171,7 @@ private fun AppScaffold(viewModel: AppViewModel) {
     // 全体を Box でラップし、全画面プレイヤーは Scaffold (タブ+ミニプレイヤー) の最前面に重ねる
     Box(Modifier.fillMaxSize()) {
         Scaffold(
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             bottomBar = {
                 Column {
                     // ミニプレイヤー (再生中かつ全画面プレイヤー非表示のみ)
@@ -200,17 +202,17 @@ private fun AppScaffold(viewModel: AppViewModel) {
                 when (selectedTab) {
                     BottomTab.HOME -> HomeScreen(
                         viewModel = viewModel,
-                        onShowAllFavorites = {
-                            // タイムフリーのお気に入りタブを開く
-                            timefreeOpenFavorites = true
+                        onShowAllDownloads = {
+                            // タイムフリーのダウンロードタブを開く
+                            timefreeOpenDownloads = true
                             selectedTab = BottomTab.TIMEFREE
                         },
                     )
                     BottomTab.PROGRAM_GUIDE -> ProgramGuideScreen(viewModel)
                     BottomTab.TIMEFREE -> TimefreeScreen(
                         viewModel = viewModel,
-                        openFavorites = timefreeOpenFavorites,
-                        onFavoritesOpened = { timefreeOpenFavorites = false },
+                        openDownloads = timefreeOpenDownloads,
+                        onDownloadsOpened = { timefreeOpenDownloads = false },
                     )
                     BottomTab.SETTINGS -> SettingsScreen(viewModel)
                 }

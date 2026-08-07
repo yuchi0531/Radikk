@@ -5,12 +5,14 @@ import com.radikk.app.data.api.FullKeyProvider
 import com.radikk.app.data.api.RadikoApiClient
 import com.radikk.app.data.auth.AuthRepository
 import com.radikk.app.data.datastore.SettingsRepository
-import com.radikk.app.data.favorite.FavoriteRepository
+import com.radikk.app.data.download.DownloadManager
+import com.radikk.app.data.download.DownloadRepository
 import com.radikk.app.data.programcache.ProgramCacheRepository
 import com.radikk.app.data.reminder.ReminderRepository
 import com.radikk.app.data.repository.ProgramRepository
 import com.radikk.app.data.repository.StationRepository
 import com.radikk.app.data.timefree.TimefreeCacheRepository
+import com.radikk.app.player.StreamUrlResolver
 
 /**
  * Radikk アプリケーション。
@@ -34,7 +36,9 @@ class RadikkApplication : Application() {
         private set
     lateinit var programCacheRepository: ProgramCacheRepository
         private set
-    lateinit var favoriteRepository: FavoriteRepository
+    lateinit var downloadRepository: DownloadRepository
+        private set
+    lateinit var downloadManager: DownloadManager
         private set
 
     override fun onCreate() {
@@ -55,6 +59,7 @@ class RadikkApplication : Application() {
         reminderRepository = ReminderRepository(this)
         timefreeCacheRepository = TimefreeCacheRepository(this)
         programCacheRepository = ProgramCacheRepository(this)
-        favoriteRepository = FavoriteRepository(this)
+        downloadRepository = DownloadRepository(this)
+        downloadManager = DownloadManager(apiClient, StreamUrlResolver(apiClient), downloadRepository)
     }
 }

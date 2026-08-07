@@ -163,7 +163,10 @@ fun ProgramGuideScreen(
         ) {
             // 日付チップ
             LazyRow(
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 16.dp,
+                    vertical = 4.dp,
+                ),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(days) { offset ->

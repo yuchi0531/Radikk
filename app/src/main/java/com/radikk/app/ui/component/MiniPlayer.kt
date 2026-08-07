@@ -1,13 +1,12 @@
 package com.radikk.app.ui.component
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
@@ -15,6 +14,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,7 +28,8 @@ import com.radikk.app.ui.AppViewModel
 
 /**
  * ミニプレイヤー。画面下部に固定表示。
- * 再生/停止ボタン + タップでフルプレイヤー (Phase 3 後半で実装)。
+ * 再生/停止ボタン + タップでフルプレイヤー。
+ * 上部に再生位置を示す細いシークバー (読み取り専用の進捗表示) を表示する。
  */
 @Composable
 fun MiniPlayer(
@@ -49,47 +50,66 @@ fun MiniPlayer(
         color = MaterialTheme.colorScheme.surfaceVariant,
         shadowElevation = 8.dp,
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
+            // 再生位置の進捗バー。読み取り専用 (ドラッグ不可) で、タップはフルプレイヤーを開く。
+            // ライブ (duration <= 0) は disabled トラックを表示し、タイムフリー/ダウンロード再生のみ進捗を示す。
+            val durationMs = playerState.durationMs
+            val maxValue = if (durationMs > 0) durationMs.toFloat() else 1f
+            Slider(
+                value = playerState.positionMs.toFloat().coerceIn(0f, maxValue),
+                onValueChange = {},
+                enabled = durationMs > 0,
+                valueRange = 0f..maxValue,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(
-                    text = nowPlaying.stationName,
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = nowPlaying.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            IconButton(
-                onClick = {
-                    if (isPlaying) viewModel.pause() else viewModel.play()
-                },
-            ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (isPlaying) "一時停止" else "再生",
-                )
-            }
-            IconButton(
-                onClick = { viewModel.stop() },
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Close,
-                    contentDescription = "停止",
-                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        text = nowPlaying.stationName,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = nowPlaying.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        if (isPlaying) viewModel.pause() else viewModel.play()
+                    },
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "一時停止" else "再生",
+                    )
+                }
+                IconButton(
+                    onClick = { viewModel.stop() },
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "停止",
+                    )
+                }
             }
         }
     }

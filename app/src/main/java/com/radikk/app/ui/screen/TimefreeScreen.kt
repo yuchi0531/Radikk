@@ -14,9 +14,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -42,7 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.radikk.app.data.favorite.FavoriteEntry
+import com.radikk.app.data.download.DownloadedProgram
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
 import com.radikk.app.data.timefree.CachedTimefreeProgram
@@ -58,7 +59,7 @@ import java.time.Instant
  *
  * - 検索バー: キャッシュ済み番組を番組名/パーソナリティ/局名で検索
  * - 局選択: 過去7日分の番組リスト (取得時にキャッシュへ保存)
- * - お気に入り: 登録した番組一覧 (タップで再生、ハートで解除)
+ * - ダウンロード: ダウンロード済み番組一覧 (タップで再生、削除ボタン付き)
  * - タップで再生 (シーク可能)
  *
  * キャッシュは DataStore に永続化され、タイムフリー期間外 (過去7日より前) の
@@ -69,11 +70,11 @@ import java.time.Instant
 fun TimefreeScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
-    openFavorites: Boolean = false,
-    onFavoritesOpened: () -> Unit = {},
+    openDownloads: Boolean = false,
+    onDownloadsOpened: () -> Unit = {},
 ) {
     val stationState by viewModel.stationState.collectAsState()
-    val favorites by viewModel.favorites.collectAsState()
+    val downloads by viewModel.downloads.collectAsState()
     var selectedStation by remember { mutableStateOf<Station?>(null) }
     var selectedDayOffset by remember { mutableStateOf(0) }
     var programs by remember { mutableStateOf<List<Program>>(emptyList()) }
@@ -85,15 +86,15 @@ fun TimefreeScreen(
         selectedStation = null
     }
 
-    // 検索 / 局から選ぶ / お気に入り モード
+    // 検索 / 局から選ぶ / ダウンロード モード
     var mode by remember { mutableStateOf(TimefreeMode.SEARCH) }
 
-    // ホームの「すべて見る」→ お気に入りタブを開く (フラグ消費後にリセット)
-    LaunchedEffect(openFavorites) {
-        if (openFavorites) {
-            mode = TimefreeMode.FAVORITES
+    // ホームの「すべて見る」→ ダウンロードタブを開く (フラグ消費後にリセット)
+    LaunchedEffect(openDownloads) {
+        if (openDownloads) {
+            mode = TimefreeMode.DOWNLOADS
             selectedStation = null
-            onFavoritesOpened()
+            onDownloadsOpened()
         }
     }
 
@@ -107,9 +108,9 @@ fun TimefreeScreen(
     // 選択中のエリアの局一覧
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
 
-    // お気に入り登録済み番組のキー集合 (stationId, ftEpochMillis)。
-    // favorites の変更で再計算されるため、各行の isFavorite が反応的に更新される。
-    val favoriteKeys = favorites.map { it.stationId to it.ftEpochMillis }.toSet()
+    // ダウンロード済み番組のキー集合 (stationId, ftEpochMillis)。
+    // downloads の変更で再計算されるため、各行のダウンロード状態が反応的に更新される。
+    val downloadKeys = downloads.map { it.stationId to it.ftEpochMillis }.toSet()
 
     // エリア変更後、選択中の局が現在のエリアに存在しない場合は一覧へ戻す
     LaunchedEffect(stations.map { it.id }.joinToString(",")) {
@@ -171,7 +172,7 @@ fun TimefreeScreen(
                 is AppViewModel.StationUiState.Success -> {
                     if (selectedStation == null) {
                         Column(Modifier.fillMaxSize()) {
-                            // 検索 / 局から選ぶ / お気に入り モード切り替えタブ
+                            // 検索 / 局から選ぶ / ダウンロード モード切り替えタブ
                             PrimaryTabRow(selectedTabIndex = mode.ordinal) {
                                 Tab(
                                     selected = mode == TimefreeMode.SEARCH,
@@ -184,9 +185,9 @@ fun TimefreeScreen(
                                     text = { Text("局から選ぶ") },
                                 )
                                 Tab(
-                                    selected = mode == TimefreeMode.FAVORITES,
-                                    onClick = { mode = TimefreeMode.FAVORITES },
-                                    text = { Text("お気に入り") },
+                                    selected = mode == TimefreeMode.DOWNLOADS,
+                                    onClick = { mode = TimefreeMode.DOWNLOADS },
+                                    text = { Text("ダウンロード") },
                                 )
                             }
 
@@ -198,7 +199,7 @@ fun TimefreeScreen(
                                         onValueChange = { searchQuery = it },
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                                            .padding(horizontal = 16.dp, vertical = 4.dp),
                                         placeholder = { Text("番組名・パーソナリティで検索") },
                                         leadingIcon = {
                                             Icon(Icons.Filled.Search, contentDescription = null)
@@ -238,9 +239,15 @@ fun TimefreeScreen(
                                                     val station = stations.firstOrNull { it.id == cached.stationId }
                                                     SearchResultRow(
                                                         cached = cached,
+                                                        isDownloaded = (cached.stationId to cached.ftEpochMillis) in downloadKeys,
                                                         onClick = {
                                                             if (station != null) {
                                                                 viewModel.playCachedTimefree(station, cached)
+                                                            }
+                                                        },
+                                                        onDownload = {
+                                                            if (station != null) {
+                                                                viewModel.downloadTimefree(station, cached.toProgram(station))
                                                             }
                                                         },
                                                     )
@@ -276,9 +283,9 @@ fun TimefreeScreen(
                                         }
                                     }
                                 }
-                                TimefreeMode.FAVORITES -> {
-                                    // お気に入り一覧
-                                    if (favorites.isEmpty()) {
+                                TimefreeMode.DOWNLOADS -> {
+                                    // ダウンロード一覧
+                                    if (downloads.isEmpty()) {
                                         Box(
                                             Modifier
                                                 .fillMaxWidth()
@@ -286,7 +293,7 @@ fun TimefreeScreen(
                                             contentAlignment = Alignment.Center,
                                         ) {
                                             Text(
-                                                "お気に入りはまだありません",
+                                                "ダウンロード済みの番組はありません",
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
@@ -295,12 +302,12 @@ fun TimefreeScreen(
                                             contentPadding = PaddingValues(16.dp),
                                             verticalArrangement = Arrangement.spacedBy(4.dp),
                                         ) {
-                                            items(favorites, key = { it.stationId + "|" + it.ftEpochMillis }) { entry ->
-                                                FavoriteEntryRow(
+                                            items(downloads, key = { it.stationId + "|" + it.ftEpochMillis }) { entry ->
+                                                DownloadedEntryRow(
                                                     entry = entry,
-                                                    onClick = { viewModel.playFavorite(entry) },
+                                                    onClick = { viewModel.playDownloaded(entry) },
                                                     onRemove = {
-                                                        viewModel.removeFavorite(entry.stationId, entry.ftEpochMillis)
+                                                        viewModel.deleteDownload(entry.stationId, entry.ftEpochMillis)
                                                     },
                                                 )
                                             }
@@ -389,9 +396,9 @@ fun TimefreeScreen(
                                         items(programs, key = { it.ft.toEpochMilli() }) { program ->
                                             TimefreeProgramRow(
                                                 program = program,
-                                                isFavorite = (station.id to program.ft.toEpochMilli()) in favoriteKeys,
+                                                isDownloaded = (station.id to program.ft.toEpochMilli()) in downloadKeys,
                                                 onClick = { viewModel.playTimefree(station, program) },
-                                                onToggleFavorite = { viewModel.toggleFavorite(station, program) },
+                                                onDownload = { viewModel.downloadTimefree(station, program) },
                                             )
                                         }
                                     }
@@ -406,64 +413,84 @@ fun TimefreeScreen(
 }
 
 /**
- * 検索結果の行。
+ * 検索結果の行。右端にダウンロードボタン (済みならチェック表示) 付き。
  */
 @Composable
 private fun SearchResultRow(
     cached: CachedTimefreeProgram,
+    isDownloaded: Boolean,
     onClick: () -> Unit,
+    onDownload: () -> Unit,
 ) {
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = cached.stationName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = "${RadikoTimeUtil.formatDate(Instant.ofEpochMilli(cached.ftEpochMillis))} " +
+                        "${RadikoTimeUtil.formatTime(Instant.ofEpochMilli(cached.ftEpochMillis))}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
-                text = cached.stationName,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Text(
-                text = "${RadikoTimeUtil.formatDate(Instant.ofEpochMilli(cached.ftEpochMillis))} " +
-                    "${RadikoTimeUtil.formatTime(Instant.ofEpochMilli(cached.ftEpochMillis))}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Text(
-            text = cached.title,
-            style = MaterialTheme.typography.bodyLarge,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        // "null" 文字列は API の null 相当なので表示しない
-        if (!cached.performer.isNullOrBlank() && cached.performer != "null") {
-            Text(
-                text = cached.performer,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                text = cached.title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            // "null" 文字列は API の null 相当なので表示しない
+            if (!cached.performer.isNullOrBlank() && cached.performer != "null") {
+                Text(
+                    text = cached.performer,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
-        HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
+        if (isDownloaded) {
+            Icon(
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = "ダウンロード済み",
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        } else {
+            IconButton(onClick = onDownload) {
+                Icon(
+                    imageVector = Icons.Filled.Download,
+                    contentDescription = "ダウンロード",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
+    HorizontalDivider()
 }
 
 /**
- * タイムフリー再生可能な番組の行。右端にハート (お気に入りトグル) 付き。
+ * タイムフリー再生可能な番組の行。右端にダウンロードボタン (済みならチェック表示) 付き。
  */
 @Composable
 private fun TimefreeProgramRow(
     program: Program,
-    isFavorite: Boolean,
+    isDownloaded: Boolean,
     onClick: () -> Unit,
-    onToggleFavorite: () -> Unit,
+    onDownload: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -507,23 +534,31 @@ private fun TimefreeProgramRow(
                 )
             }
         }
-        IconButton(onClick = onToggleFavorite) {
+        if (isDownloaded) {
             Icon(
-                imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                contentDescription = if (isFavorite) "お気に入り解除" else "お気に入り登録",
-                tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = "ダウンロード済み",
+                tint = MaterialTheme.colorScheme.primary,
             )
+        } else {
+            IconButton(onClick = onDownload) {
+                Icon(
+                    imageVector = Icons.Filled.Download,
+                    contentDescription = "ダウンロード",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
     HorizontalDivider()
 }
 
 /**
- * お気に入りエントリの行。タップで再生、ハートで解除。
+ * ダウンロード済み番組の行。タップで再生、右端のボタンで削除。
  */
 @Composable
-private fun FavoriteEntryRow(
-    entry: FavoriteEntry,
+private fun DownloadedEntryRow(
+    entry: DownloadedProgram,
     onClick: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -560,9 +595,9 @@ private fun FavoriteEntryRow(
         }
         IconButton(onClick = onRemove) {
             Icon(
-                imageVector = Icons.Filled.Favorite,
-                contentDescription = "お気に入り解除",
-                tint = MaterialTheme.colorScheme.primary,
+                imageVector = Icons.Filled.Close,
+                contentDescription = "ダウンロード削除",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -570,4 +605,18 @@ private fun FavoriteEntryRow(
 }
 
 /** タイムフリー画面のモード。 */
-private enum class TimefreeMode { SEARCH, STATIONS, FAVORITES }
+private enum class TimefreeMode { SEARCH, STATIONS, DOWNLOADS }
+
+/**
+ * キャッシュ済みタイムフリー番組を [Program] に変換する (ダウンロード実行用)。
+ */
+private fun CachedTimefreeProgram.toProgram(station: Station): Program = Program(
+    stationId = station.id,
+    ft = Instant.ofEpochMilli(ftEpochMillis),
+    to = Instant.ofEpochMilli(toEpochMillis),
+    title = title,
+    description = description,
+    performer = performer,
+    episodeId = null,
+    imgUrl = imgUrl,
+)

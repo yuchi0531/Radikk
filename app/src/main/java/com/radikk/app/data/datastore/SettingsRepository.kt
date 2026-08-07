@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.map
  *
  * - エリア選択 (47都道府県)
  * - テーマ (ライト/ダーク/自動 + ダイナミックカラー)
+ * - ダウンロード先 (SAF tree Uri 文字列。未設定ならアプリ固有領域)
  * - 認証セッション (token / areaId / 有効期限 / device / user)
  */
 private val Context.dataStore by preferencesDataStore(name = "radikk_settings")
@@ -23,6 +24,7 @@ data class AppSettings(
     val areaId: String = "JP13",
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
+    val downloadPath: String? = null,
 )
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
@@ -42,6 +44,7 @@ class SettingsRepository(private val context: Context) {
         val AREA_ID = stringPreferencesKey("area_id")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = stringPreferencesKey("dynamic_color")
+        val DOWNLOAD_PATH = stringPreferencesKey("download_path")
 
         val AUTH_TOKEN = stringPreferencesKey("auth_token")
         val AUTH_AREA_ID = stringPreferencesKey("auth_area_id")
@@ -57,6 +60,7 @@ class SettingsRepository(private val context: Context) {
             themeMode = p[Keys.THEME_MODE]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() }
                 ?: ThemeMode.SYSTEM,
             dynamicColor = p[Keys.DYNAMIC_COLOR]?.toBoolean() ?: true,
+            downloadPath = p[Keys.DOWNLOAD_PATH],
         )
     }
 
@@ -70,6 +74,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setDynamicColor(enabled: Boolean) {
         context.dataStore.edit { it[Keys.DYNAMIC_COLOR] = enabled.toString() }
+    }
+
+    suspend fun setDownloadPath(path: String) {
+        context.dataStore.edit { it[Keys.DOWNLOAD_PATH] = path }
     }
 
     /** 現在の設定を一度だけ読み取る */

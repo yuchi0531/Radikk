@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -33,7 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.radikk.app.data.favorite.FavoriteEntry
+import com.radikk.app.data.download.DownloadedProgram
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.AreaSelector
 import com.radikk.app.ui.component.StationCard
@@ -42,19 +42,19 @@ import java.time.Instant
 
 /**
  * ホーム画面。
- * エリア選択・放送局一覧（現在放送中番組名付き）・お気に入り（最大5件）を縦スクロールで表示する。
- * お気に入りが5件を超える場合は「すべて見る」からタイムフリーのお気に入りタブへ遷移できる。
+ * エリア選択・放送局一覧（現在放送中番組名付き）・ダウンロード（最大5件）を縦スクロールで表示する。
+ * ダウンロードが5件を超える場合は「すべて見る」からタイムフリーのダウンロードタブへ遷移できる。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
-    onShowAllFavorites: (() -> Unit)? = null,
+    onShowAllDownloads: (() -> Unit)? = null,
 ) {
     val stationState by viewModel.stationState.collectAsState()
     val selectedAreaId by viewModel.selectedAreaId.collectAsState()
-    val favorites by viewModel.favorites.collectAsState()
+    val downloads by viewModel.downloads.collectAsState()
 
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
 
@@ -78,13 +78,12 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
             // エリアセレクタ
             AreaSelector(
                 selectedAreaId = selectedAreaId,
                 onAreaSelected = { viewModel.changeArea(it) },
-                modifier = Modifier.padding(bottom = 12.dp),
             )
 
             // 局一覧 (局一覧の状態に依存)
@@ -130,48 +129,48 @@ fun HomeScreen(
                 }
             }
 
-            // お気に入り (最大5件。超過時は「すべて見る」でタイムフリーのお気に入りタブへ)
-            FavoritesSection(
-                favorites = favorites.take(5),
-                totalCount = favorites.size,
-                onEntryClick = { viewModel.playFavorite(it) },
-                onRemove = { viewModel.removeFavorite(it.stationId, it.ftEpochMillis) },
-                onShowAll = onShowAllFavorites,
+            // ダウンロード (最大5件。超過時は「すべて見る」でタイムフリーのダウンロードタブへ)
+            DownloadsSection(
+                downloads = downloads.take(5),
+                totalCount = downloads.size,
+                onEntryClick = { viewModel.playDownloaded(it) },
+                onRemove = { viewModel.deleteDownload(it.stationId, it.ftEpochMillis) },
+                onShowAll = onShowAllDownloads,
             )
         }
     }
 }
 
 /**
- * お気に入りセクション。
- * お気に入り登録したタイムフリー番組の一覧。タップで再生、ハートアイコンで解除。
- * favorites は呼び出し側で最大5件に制限済み。totalCount が5を超える場合は「すべて見る」を表示する。
+ * ダウンロードセクション。
+ * ダウンロード済みのタイムフリー番組の一覧。タップで再生、右端のボタンで削除。
+ * downloads は呼び出し側で最大5件に制限済み。totalCount が5を超える場合は「すべて見る」を表示する。
  */
 @Composable
-private fun FavoritesSection(
-    favorites: List<FavoriteEntry>,
+private fun DownloadsSection(
+    downloads: List<DownloadedProgram>,
     totalCount: Int,
-    onEntryClick: (FavoriteEntry) -> Unit,
-    onRemove: (FavoriteEntry) -> Unit,
+    onEntryClick: (DownloadedProgram) -> Unit,
+    onRemove: (DownloadedProgram) -> Unit,
     onShowAll: (() -> Unit)? = null,
 ) {
     Text(
-        text = "お気に入り",
+        text = "ダウンロード",
         style = MaterialTheme.typography.titleMedium,
         modifier = Modifier.padding(top = 16.dp),
     )
 
-    if (favorites.isEmpty()) {
+    if (downloads.isEmpty()) {
         Text(
-            text = "お気に入りはまだありません",
+            text = "ダウンロード済みの番組はありません",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 8.dp),
         )
     } else {
         Column(modifier = Modifier.fillMaxWidth()) {
-            favorites.forEach { entry ->
-                FavoriteRow(
+            downloads.forEach { entry ->
+                DownloadRow(
                     entry = entry,
                     onClick = { onEntryClick(entry) },
                     onRemove = { onRemove(entry) },
@@ -188,12 +187,12 @@ private fun FavoritesSection(
 }
 
 /**
- * お気に入りの1行。番組タイトル・局名・放送日時を表示し、タップで再生。
- * 右端のハートアイコンでお気に入り解除。
+ * ダウンロード済み番組の1行。番組タイトル・局名・放送日時を表示し、タップで再生。
+ * 右端のボタンで削除。
  */
 @Composable
-private fun FavoriteRow(
-    entry: FavoriteEntry,
+private fun DownloadRow(
+    entry: DownloadedProgram,
     onClick: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -232,9 +231,9 @@ private fun FavoriteRow(
         }
         IconButton(onClick = onRemove) {
             Icon(
-                imageVector = Icons.Filled.Favorite,
-                contentDescription = "お気に入り解除",
-                tint = MaterialTheme.colorScheme.primary,
+                imageVector = Icons.Filled.Close,
+                contentDescription = "ダウンロード削除",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

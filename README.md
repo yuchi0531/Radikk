@@ -6,12 +6,15 @@ Flutter 版で発生した「ExoPlayer の HLS Source Error(0)（`SampleQueueMap
 
 ## 機能
 
-- **ライブ再生**: 放送局一覧 → タップ → 認証 → 再生
-- **タイムフリー再生**: 過去7日分の番組リスト → タップ → 再生（シーク可能）
-- **番組表**: 局一覧 × 時間（JST 5:00 起点24時間）のグリッド。日付チップ（今日〜7日分）、放送中ハイライト
-- **設定**: エリア選択（47都道府県）、テーマ（自動/ライト/ダーク + ダイナミックカラー）、バックグラウンド再生、認証キャッシュ削除、バージョン表示
-- **ミニプレイヤー**: 画面下部に固定表示
-- **バックグラウンド再生**: Media3 `MediaSessionService`
+- **ホーム**: エリア選択 + 放送局一覧（各局の現在放送中番組名を表示）。ダウンロード番組（最大5件）を下部に表示し、「すべて見る」でタイムフリーのダウンロードタブへ遷移
+- **ライブ再生**: 放送局タップ → 認証 → 再生。NHK など smartstream が 504 を返す局は dr-wowza へ自動フォールバック
+- **タイムフリー再生**: 「検索」/「局から選ぶ」/「ダウンロード」のタブ構成。過去7日分の番組を再生（シーク・一時停止・再開）。ダウンロードボタンで番組を単一 .aac ファイルとして保存
+- **ダウンロード**: SAF（Storage Access Framework）のフォルダ選択で指定した先へ保存。ダウンロード一覧からそのまま再生・削除できる
+- **番組表**: 局一覧 × 時間（JST 5:00 起点24時間）のグリッド。日付チップ（今日〜7日分）、放送中ハイライト。番組タップで詳細、長押しで開始通知の設定
+- **番組開始通知（リマインダー）**: 放送開始時刻に通知。端末再起動後も自動で再登録され、通知タップでそのまま再生
+- **ミニプレイヤー / 全画面プレイヤー**: 画面下部のミニプレイヤー（停止ボタン付き）。タップで全画面プレイヤー（番組詳細・局ロゴ・シークバー）
+- **バックグラウンド再生**: Media3 `MediaSessionService`（常時有効）
+- **設定**: エリア選択（47都道府県）、テーマ（自動/ライト/ダーク + ダイナミックカラー）、番組開始通知の一覧管理、認証キャッシュ削除、バージョン表示
 
 ## 技術スタック
 
@@ -22,6 +25,7 @@ Flutter 版で発生した「ExoPlayer の HLS Source Error(0)（`SampleQueueMap
 | 再生 | androidx.media3 1.9.4 (exoplayer-hls) |
 | HTTP | OkHttp 4.12.0 |
 | JSON | kotlinx.serialization |
+| 画像 | Coil 2.7.0 |
 | 永続化 | DataStore Preferences |
 | minSdk / targetSdk | 26 / 36 |
 
@@ -35,9 +39,14 @@ export ANDROID_HOME=/home/yuchi0531/android-sdk
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`
 
-テスト:
+テスト（単体・ネットワーク不要）:
 ```bash
 ./gradlew testDebugUnitTest
+```
+
+lint:
+```bash
+./gradlew lint
 ```
 
 ## 実機インストール手順
@@ -48,33 +57,39 @@ APK: `app/build/outputs/apk/debug/app-debug.apk`
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-1. アプリ起動 → ライブタブで東京の局（例: TBSラジオ）をタップ → 音が出ることを確認
+1. アプリ起動 → ホームタブで東京の局（例: TBSラジオ）をタップ → 音が出ることを確認
 2. 番組表タブで局を選択 → 番組表が表示されることを確認
 3. 放送中番組をタップ → ライブ再生
 4. 過去の番組をタップ → タイムフリー再生（シーク・一時停止・再開）
-5. 設定タブでエリア変更 → 再認証され、局一覧が切り替わることを確認
+5. 番組を長押し → 開始通知を設定 → 通知が届き、タップで再生されることを確認
+6. 設定タブでエリア変更 → 再認証され、局一覧が切り替わることを確認
 
 ## アーキテクチャ
 
 ```
 com.radikk.app
-├── MainActivity.kt          # ボトムナビ 4 タブ
-├── RadikkApplication.kt     # DI ワイヤリング
+├── MainActivity.kt          # ボトムナビ 4 タブ（ホーム/番組表/タイムフリー/設定）、通知タップ再生
+├── RadikkApplication.kt     # 手動 DI ワイヤリング
 ├── data/
-│   ├── api/                 # OkHttp クライアント、RadikoApi 定数、fullKey 読み込み
+│   ├── api/                 # OkHttp クライアント、RadikoApi 定数・エリア GPS 座標、fullKey 読み込み
 │   ├── auth/                # AuthRepository (auth1→auth2、シングルフライト、トークン永続化)
 │   ├── model/               # Station, Program, AuthSession
 │   ├── repository/          # StationRepository (full.xml), ProgramRepository (v4 date)
-│   └── datastore/           # SettingsRepository (設定・認証情報)
+│   ├── datastore/           # SettingsRepository (設定・認証情報)
+│   ├── programcache/        # 番組表の日別キャッシュ
+│   ├── timefree/            # タイムフリー検索用キャッシュ
+│   ├── download/            # DownloadRepository (ダウンロード済み番組) / DownloadManager (.aac 保存)
+│   ├── reminder/            # 番組開始通知 (Repository / Scheduler / Receiver / BootReceiver)
 ├── player/
 │   ├── RadikoPlayer.kt      # Media3 ラッパー、medialist 直接再生、エラー分類
-│   ├── StreamUrlResolver.kt # m3u8→medialist URL 抽出
+│   ├── StreamUrlResolver.kt # m3u8→medialist URL 抽出、NHK フォールバック、シーク対応
 │   └── PlaybackService.kt   # MediaSessionService
 ├── ui/
 │   ├── theme/               # Material3 + ダイナミックカラー
-│   ├── screen/              # Live/ProgramGuide/Timefree/Settings
-│   └── component/           # StationCard, AreaSelector, MiniPlayer
-└── util/                    # RadikoTimeUtil (JST 14桁変換、5時起点)
+│   ├── navigation/          # BottomTab (4 タブ定義)
+│   ├── screen/              # Home / ProgramGuide / Timefree / Settings
+│   └── component/           # StationCard, AreaSelector, MiniPlayer, FullPlayerScreen, ProgramDetailDialog
+└── util/                    # RadikoTimeUtil (JST 14桁変換、5時起点)、HtmlText
 ```
 
 ## HLS Source Error 回避策
@@ -85,17 +100,20 @@ com.radikk.app
    - `X-Radiko-AuthToken` / `X-Radiko-AreaId` が HLS の全リクエストに付与される
 3. **ID3 タグ付き ADTS AAC セグメント**
    - Media3 の `DefaultHlsExtractorFactory` はデフォルトで `AdtsExtractor` を含み、ID3 ヘッダーをスキップして ADTS を検出する（ソースで確認済み）
+4. **NHK など 504 を返す局のフォールバック**
+   - `areafree=1` の smartstream 系 (si-c) が medialist で HTTP 504 を返す場合、timefree=0 の候補を優先順位（dr-wowza → smartstream）で順に試行する
 
 ## 認証フロー
 
 1. **auth1**: `GET /v2/api/auth1`（`X-Radiko-App: aSmartPhone8` 等）
 2. **partialkey**: fullKey（assets/fullkey.b64, 167KB base64）をデコード → `[KeyOffset, KeyOffset+KeyLength)` をスライス → 再 base64
 3. **auth2**: `GET /v2/api/auth2`（partialkey + GPS 座標）→ `JP13,東京都,tokyo Japan`
-4. トークンは約90分で期限切れ。有効期限と areaId を DataStore に永続化し、エリア一致+有効期限内なら再利用
+4. トークンは約90分で期限切れ。有効期限と areaId を DataStore に永続化し、エリア一致+有効期限内なら再利用（認証はシングルフライト化）
 
 ## 注意点
 
 - **fullKey**: `assets/fullkey.b64` に配置（Kotlin 文字列定数の 64KB 制限を超えるため）
 - **エリア変更**: トークンはエリアに紐づくため、変更時は必ず再認証
-- **時刻**: すべて JST 基準。内部は UTC で保持し表示時に `Asia/Tokyo` で変換
+- **タイムフリーのシーク**: radiko は約5分のスライディングウィンドウ配信のため、5分以上先へのシークは `seek` パラメータ付きでプレイリストを作り直す（ExoPlayer.seekTo だけでは移動できない）
+- **時刻**: すべて JST 基準。内部は UTC で保持し表示時に `Asia/Tokyo` で変換。番組表の日付境界は JST 5:00 起点（深夜 0:00-4:59 は前日分）
 - **キャッシュ**: 放送局一覧 1時間、日別番組表 1時間（メモリ上限 300 件）
