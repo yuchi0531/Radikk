@@ -38,6 +38,7 @@ class StreamUrlResolver(
     /**
      * タイムフリー再生用の m3u8 リクエスト URL を組み立てる。
      * ft/to は JST 14桁 (YYYYMMDDHHMMSS)。全パラメータ必須。
+     * シークは番組先頭 (ft) を指す。
      */
     fun buildTimefreePlaylistUrl(
         stationId: String,
@@ -45,11 +46,32 @@ class StreamUrlResolver(
         from: Instant,
         to: Instant,
         lsid: String,
+    ): String = buildTimefreePlaylistUrl(stationId, playlistCreateUrl, from, to, lsid, 0L)
+
+    /**
+     * タイムフリー再生用の m3u8 リクエスト URL を組み立てる。
+     * ft/to は JST 14桁 (YYYYMMDDHHMMSS)。全パラメータ必須。
+     *
+     * radiko のタイムフリーは l=300 (約5分) のスライディングウィンドウ配信のため、
+     * 番組途中へのシークは `seek` パラメータを「番組先頭 + オフセット」に設定して
+     * プレイリストを作り直す必要がある (ExoPlayer.seekTo はロード済みウィンドウ内しか移動できない)。
+     * サーバーは seek 位置からウィンドウを開始した medialist を返す。
+     *
+     * @param seekOffsetMs 番組先頭からのシーク位置 (ミリ秒)。既定 0 = 番組先頭。
+     */
+    fun buildTimefreePlaylistUrl(
+        stationId: String,
+        playlistCreateUrl: String,
+        from: Instant,
+        to: Instant,
+        lsid: String,
+        seekOffsetMs: Long,
     ): String {
         val ft = RadikoTimeUtil.formatJst14(from)
         val toJst = RadikoTimeUtil.formatJst14(to)
+        val seekJst = RadikoTimeUtil.formatJst14(from.plusMillis(seekOffsetMs.coerceAtLeast(0L)))
         return "$playlistCreateUrl?station_id=$stationId&ft=$ft&to=$toJst" +
-            "&start_at=$ft&end_at=$toJst&type=b&l=300&seek=$ft&lsid=$lsid"
+            "&start_at=$ft&end_at=$toJst&type=b&l=300&seek=$seekJst&lsid=$lsid"
     }
 
     /**
@@ -173,6 +195,8 @@ class StreamUrlResolver(
 
     /**
      * タイムフリー再生用の medialist URL を取得する。
+     * @param seekOffsetMs 番組先頭からのシーク位置 (ミリ秒)。既定 0 = 番組先頭。
+     *                     シーク時はプレイリストを seek 位置で作り直し、そこから配信される。
      */
     suspend fun resolveTimefreeMedialistUrl(
         stationId: String,
@@ -180,9 +204,10 @@ class StreamUrlResolver(
         from: Instant,
         to: Instant,
         lsid: String = RadikoApi.randomHex32(),
+        seekOffsetMs: Long = 0L,
     ): String {
         val playlistUrl = getTimefreePlaylistUrl(stationId)
-        val m3u8Url = buildTimefreePlaylistUrl(stationId, playlistUrl, from, to, lsid)
+        val m3u8Url = buildTimefreePlaylistUrl(stationId, playlistUrl, from, to, lsid, seekOffsetMs)
         return resolveMedialist(m3u8Url, token)
     }
 

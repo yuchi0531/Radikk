@@ -97,6 +97,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val playerUiState = radikoPlayer.uiState
 
+    /**
+     * 現在のタイムフリー再生コンテキスト。シーク時にプレイリストを
+     * `seek` パラメータ付きで作り直すために保持する。ライブ再生や停止でクリアされる。
+     */
+    private var timefreeContext: TimefreeSeekContext? = null
+
+    private data class TimefreeSeekContext(
+        val station: Station,
+        val ft: Instant,
+        val to: Instant,
+        val token: String,
+    )
+
     // --- 番組開始通知 (リマインダー) ---
     private val _reminders = MutableStateFlow<List<StoredReminder>>(emptyList())
     val reminders: StateFlow<List<StoredReminder>> = _reminders.asStateFlow()
@@ -284,6 +297,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun playLive(station: Station) {
         viewModelScope.launch {
             _errorMessage.value = null
+            // ライブは URL ベースシーク対象外 (タイムフリーのみ)
+            timefreeContext = null
             try {
                 // バックグラウンド再生設定に応じて FGS を起動/停止
                 applyBackgroundPlayback(_settings.value.backgroundPlayback)
@@ -370,6 +385,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 再生を停止する。 */
     fun stop() {
         radikoPlayer.stop()
+        timefreeContext = null
         liveTitleJob?.cancel()
         liveTitleJob = null
         _nowPlaying.value = null
@@ -388,6 +404,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 val session = auth.getSession(_selectedAreaId.value)
                 radikoPlayer.setAuth(session.token, session.areaId)
+                // シーク時のプレイリスト再構築用に現在のタイムフリー再生コンテキストを保持する
+                timefreeContext = TimefreeSeekContext(station, program.ft, program.to, session.token)
 
                 val resolver = StreamUrlResolver(app.apiClient)
                 val medialistUrl = resolver.resolveTimefreeMedialistUrl(
@@ -396,7 +414,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     from = program.ft,
                     to = program.to,
                 )
-                radikoPlayer.playMedialist(medialistUrl)
+                val durationMs = (program.to.toEpochMilli() - program.ft.toEpochMilli()).coerceAtLeast(0L)
+                radikoPlayer.playMedialist(medialistUrl, durationOverrideMs = durationMs)
 
                 _nowPlaying.value = NowPlaying(
                     stationId = station.id,
@@ -642,6 +661,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 val session = auth.getSession(_selectedAreaId.value)
                 radikoPlayer.setAuth(session.token, session.areaId)
+                // シーク時のプレイリスト再構築用に現在のタイムフリー再生コンテキストを保持する
+                timefreeContext = TimefreeSeekContext(
+                    station = station,
+                    ft = Instant.ofEpochMilli(cached.ftEpochMillis),
+                    to = Instant.ofEpochMilli(cached.toEpochMillis),
+                    token = session.token,
+                )
 
                 val resolver = StreamUrlResolver(app.apiClient)
                 val medialistUrl = resolver.resolveTimefreeMedialistUrl(
@@ -650,7 +676,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     from = Instant.ofEpochMilli(cached.ftEpochMillis),
                     to = Instant.ofEpochMilli(cached.toEpochMillis),
                 )
-                radikoPlayer.playMedialist(medialistUrl)
+                val durationMs = (cached.toEpochMillis - cached.ftEpochMillis).coerceAtLeast(0L)
+                radikoPlayer.playMedialist(medialistUrl, durationOverrideMs = durationMs)
 
                 _nowPlaying.value = NowPlaying(
                     stationId = station.id,
@@ -686,8 +713,39 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 再生再開 */
     fun play() = radikoPlayer.play()
 
-    /** シーク */
-    fun seekTo(ms: Long) = radikoPlayer.seekTo(ms)
+    /**
+     * シーク。
+     *
+     * タイムフリー再生中は ExoPlayer.seekTo を使わず、`seek` パラメータを
+     * 「番組先頭 + 位置」に設定したプレイリストを再リクエストして再ロードする。
+     * radiko のタイムフリーは l=300 (約5分) のスライディングウィンドウ配信のため、
+     * ExoPlayer.seekTo はロード済みウィンドウ内しか移動できず、先へシークすると
+     * 永久 BUFFERING になる (実機検証済み)。
+     */
+    fun seekTo(positionMs: Long) {
+        val ctx = timefreeContext ?: run {
+            // タイムフリー以外は ExoPlayer 直接シーク (ほぼ使われない)
+            radikoPlayer.seekTo(positionMs)
+            return
+        }
+        viewModelScope.launch {
+            _errorMessage.value = null
+            try {
+                val resolver = StreamUrlResolver(app.apiClient)
+                val url = resolver.resolveTimefreeMedialistUrl(
+                    stationId = ctx.station.id,
+                    token = ctx.token,
+                    from = ctx.ft,
+                    to = ctx.to,
+                    seekOffsetMs = positionMs,
+                )
+                val durationMs = (ctx.to.toEpochMilli() - ctx.ft.toEpochMilli()).coerceAtLeast(0L)
+                radikoPlayer.playMedialist(url, durationOverrideMs = durationMs, startPositionMs = positionMs)
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "シークに失敗しました"
+            }
+        }
+    }
 
     /** テーマ設定 */
     fun setThemeMode(mode: ThemeMode) {

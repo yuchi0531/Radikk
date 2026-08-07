@@ -129,6 +129,43 @@ class StreamUrlResolverTest {
     }
 
     @Test
+    fun `タイムフリー m3u8 URL の seek パラメータがオフセット付きになる`() {
+        val ft = ZonedDateTime.of(2026, 8, 7, 12, 30, 0, 0, RadikoTimeUtil.JST).toInstant()
+        val to = ZonedDateTime.of(2026, 8, 7, 13, 0, 0, 0, RadikoTimeUtil.JST).toInstant()
+        // 番組先頭から 1h30m 進んだ位置へシーク → seek=20260807140000
+        val url = resolver.buildTimefreePlaylistUrl(
+            "TBS",
+            "https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/playlist.m3u8",
+            ft,
+            to,
+            "0123456789abcdef0123456789abcdef",
+            seekOffsetMs = 90 * 60 * 1000L,
+        )
+        assertEquals(
+            "https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/playlist.m3u8?station_id=TBS" +
+                "&ft=20260807123000&to=20260807130000" +
+                "&start_at=20260807123000&end_at=20260807130000" +
+                "&type=b&l=300&seek=20260807140000&lsid=0123456789abcdef0123456789abcdef",
+            url
+        )
+    }
+
+    @Test
+    fun `タイムフリー m3u8 URL の負のシークオフセットは先頭に丸められる`() {
+        val ft = ZonedDateTime.of(2026, 8, 7, 12, 30, 0, 0, RadikoTimeUtil.JST).toInstant()
+        val to = ZonedDateTime.of(2026, 8, 7, 13, 0, 0, 0, RadikoTimeUtil.JST).toInstant()
+        val url = resolver.buildTimefreePlaylistUrl(
+            "TBS",
+            "https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/playlist.m3u8",
+            ft,
+            to,
+            "0123456789abcdef0123456789abcdef",
+            seekOffsetMs = -5000L,
+        )
+        assertTrue(url.contains("&seek=20260807123000&"))
+    }
+
+    @Test
     fun `NHK 形式の XML で dr-wowza が優先される`() {
         // NHK の station XML: areafree=1 は si-c のみ (504 を返す)、
         // areafree=0 に dr-wowza (正常配信) がある。
