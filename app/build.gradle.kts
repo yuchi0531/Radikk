@@ -5,9 +5,36 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// 署名情報 (keystore.properties)。リポジトリにコミットしない鍵パスワードを分離
+import java.util.Properties
+import java.io.FileInputStream
+
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) FileInputStream(f).use { load(it) }
+}
+
 android {
     namespace = "com.radikk.app"
     compileSdk = 36
+
+    // リリース署名設定。
+    // 開発用リリース鍵 (keystore/radikk-release.jks):
+    //   - alias: radikk
+    //   - storepass / keypass: radikk-release-2026
+    //   - dname: CN=Radikk, OU=Dev, O=Radikk, L=Tokyo, ST=Tokyo, C=JP
+    //   - RSA 2048 / SHA256withRSA / 有効期間 10,000 日
+    // 鍵本体とパスワードは keystore.properties から読み込み、git にはコミットしない。
+    signingConfigs {
+        create("release") {
+            if (keystoreProperties.containsKey("storeFile")) {
+                storeFile = rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.radikk.app"
@@ -29,6 +56,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {
