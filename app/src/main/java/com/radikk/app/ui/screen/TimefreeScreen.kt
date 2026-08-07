@@ -96,6 +96,10 @@ fun TimefreeScreen(
     // 選択中のエリアの局一覧
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
 
+    // お気に入り登録済み番組のキー集合 (stationId, ftEpochMillis)。
+    // favorites の変更で再計算されるため、各行の isFavorite が反応的に更新される。
+    val favoriteKeys = favorites.map { it.stationId to it.ftEpochMillis }.toSet()
+
     // エリア変更後、選択中の局が現在のエリアに存在しない場合は一覧へ戻す
     LaunchedEffect(stations.map { it.id }.joinToString(",")) {
         val current = selectedStation
@@ -374,7 +378,7 @@ fun TimefreeScreen(
                                         items(programs, key = { it.ft.toEpochMilli() }) { program ->
                                             TimefreeProgramRow(
                                                 program = program,
-                                                isFavorite = viewModel.isFavorite(station.id, program.ft.toEpochMilli()),
+                                                isFavorite = (station.id to program.ft.toEpochMilli()) in favoriteKeys,
                                                 onClick = { viewModel.playTimefree(station, program) },
                                                 onToggleFavorite = { viewModel.toggleFavorite(station, program) },
                                             )
