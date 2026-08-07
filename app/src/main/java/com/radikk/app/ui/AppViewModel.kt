@@ -9,6 +9,9 @@ import com.radikk.app.data.datastore.ThemeMode
 import com.radikk.app.data.model.AuthSession
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
+import com.radikk.app.data.reminder.ReminderRepository
+import com.radikk.app.data.reminder.ReminderScheduler
+import com.radikk.app.data.reminder.StoredReminder
 import com.radikk.app.player.PlaybackService
 import com.radikk.app.player.RadikoPlayer
 import com.radikk.app.player.StreamUrlResolver
@@ -32,6 +35,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val auth = app.authRepository
     private val stationRepo = app.stationRepository
     private val programRepo = app.programRepository
+    private val reminderRepo = app.reminderRepository
 
     val radikoPlayer = RadikoPlayer(application)
 
@@ -79,6 +83,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val playerUiState = radikoPlayer.uiState
 
+    // --- 番組開始通知 (リマインダー) ---
+    private val _reminders = MutableStateFlow<List<StoredReminder>>(emptyList())
+    val reminders: StateFlow<List<StoredReminder>> = _reminders.asStateFlow()
+
     init {
         // PlaybackService に共有 MediaSession を公開 (バックグラウンド再生用)
         PlaybackService.sharedMediaSession = radikoPlayer.mediaSession
@@ -100,6 +108,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             loadStations()
+        }
+
+        // リマインダー一覧を監視し、通知設定を反映する
+        viewModelScope.launch {
+            reminderRepo.reminders.collect { list ->
+                _reminders.value = list
+            }
+        }
+
+        // アプリ起動時に保存済みリマインダーを AlarmManager へ再スケジュール
+        viewModelScope.launch {
+            val scheduler = ReminderScheduler(app)
+            scheduler.rescheduleAll(reminderRepo.currentReminders())
         }
     }
 
@@ -218,12 +239,102 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 通知タップからの再生を開始する。
+     * 通知は放送開始時刻に発火するため、その局をライブ再生する。
+     * 局が一覧に見つからない場合はタイムフリー (放送中の番組) を試みる。
+     */
+    fun playFromReminder(
+        stationId: String,
+        stationName: String,
+        programTitle: String,
+        startEpochMillis: Long,
+        endEpochMillis: Long,
+    ) {
+        viewModelScope.launch {
+            _errorMessage.value = null
+            try {
+                // 局一覧から該当局を探す
+                val all = stationRepo.getStations()
+                val station = all.firstOrNull { it.id == stationId }
+                if (station == null) {
+                    _errorMessage.value = "局が見つかりませんでした: $stationName"
+                    return@launch
+                }
+
+                // 通知時刻 = 放送開始時刻。放送中ならライブ再生、終了済みならタイムフリー
+                val now = Instant.now()
+                val start = Instant.ofEpochMilli(startEpochMillis)
+                val end = Instant.ofEpochMilli(endEpochMillis)
+                if (now.isBefore(end)) {
+                    // 放送中 (開始前後の誤差含む) → ライブ再生
+                    playLive(station)
+                } else {
+                    // 放送終了済み → タイムフリー再生
+                    playTimefree(
+                        station,
+                        Program(
+                            stationId = station.id,
+                            ft = start,
+                            to = end,
+                            title = programTitle,
+                            description = null,
+                            performer = null,
+                            episodeId = null,
+                            imgUrl = null,
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "再生を開始できませんでした"
+            }
+        }
+    }
+
     /** 番組表を取得する。 */
     suspend fun getPrograms(stationId: String, dayOffset: Int = 0): List<Program> {
         val dayStart = RadikoTimeUtil.todayDayStart().plusSeconds(dayOffset * 24 * 3600L)
         val apiDate = RadikoTimeUtil.apiDateFor(dayStart)
         return programRepo.getPrograms(stationId, apiDate)
     }
+
+    // --- 番組開始通知 (リマインダー) ---
+
+    /** 指定の番組に通知が設定済みか。 */
+    suspend fun isReminderSet(stationId: String, startEpochMillis: Long): Boolean =
+        reminderRepo.isSet(stationId, startEpochMillis)
+
+    /** 番組開始通知を設定する。開始時刻が過去なら何もしない。 */
+    fun setReminder(station: Station, program: Program) {
+        viewModelScope.launch {
+            if (program.ft.toEpochMilli() <= Instant.now().toEpochMilli()) {
+                _errorMessage.value = "開始済みの番組には通知を設定できません"
+                return@launch
+            }
+            val reminder = StoredReminder(
+                id = ReminderRepository.reminderId(station.id, program.ft.toEpochMilli()),
+                stationId = station.id,
+                stationName = station.name,
+                programTitle = program.title,
+                startEpochMillis = program.ft.toEpochMilli(),
+                endEpochMillis = program.to.toEpochMilli(),
+            )
+            reminderRepo.add(reminder)
+            ReminderScheduler(app).schedule(reminder)
+            _errorMessage.value = "「${program.title}」の開始通知を設定しました"
+        }
+    }
+
+    /** 番組開始通知を解除する。 */
+    fun cancelReminder(reminder: StoredReminder) {
+        viewModelScope.launch {
+            reminderRepo.remove(reminder.id)
+            ReminderScheduler(app).cancel(reminder.id)
+        }
+    }
+
+    /** 現在のリマインダー一覧を取得する。 */
+    suspend fun currentReminders(): List<StoredReminder> = reminderRepo.currentReminders()
 
     /**
      * 複数局の番組表を並列取得する (EPG グリッド用)。
@@ -249,6 +360,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val err = playerUiState.value.error
         _errorMessage.value = err?.message
         return err?.message
+    }
+
+    /** エラーメッセージを表示する。 */
+    fun showError(message: String) {
+        _errorMessage.value = message
     }
 
     /** 一時停止 */

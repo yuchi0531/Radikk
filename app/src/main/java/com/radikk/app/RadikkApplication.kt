@@ -5,6 +5,7 @@ import com.radikk.app.data.api.FullKeyProvider
 import com.radikk.app.data.api.RadikoApiClient
 import com.radikk.app.data.auth.AuthRepository
 import com.radikk.app.data.datastore.SettingsRepository
+import com.radikk.app.data.reminder.ReminderRepository
 import com.radikk.app.data.repository.ProgramRepository
 import com.radikk.app.data.repository.StationRepository
 
@@ -24,6 +25,8 @@ class RadikkApplication : Application() {
         private set
     lateinit var programRepository: ProgramRepository
         private set
+    lateinit var reminderRepository: ReminderRepository
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -40,5 +43,6 @@ class RadikkApplication : Application() {
             val areaId = settingsRepository.currentSettings().areaId
             runCatching { authRepository.getSession(areaId).token }.getOrNull()
         }
+        reminderRepository = ReminderRepository(this)
     }
 }

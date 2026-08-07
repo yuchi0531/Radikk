@@ -2,13 +2,21 @@ package com.radikk.app.ui.screen
 
 import android.content.pm.PackageManager
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -27,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import com.radikk.app.data.datastore.ThemeMode
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.AreaSelector
+import com.radikk.app.util.RadikoTimeUtil
+import java.time.Instant
 
 /**
  * 設定画面。
@@ -39,6 +49,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     val settings by viewModel.settingsFlow.collectAsState()
+    val reminders by viewModel.reminders.collectAsState()
 
     val versionName = rememberVersionName()
 
@@ -49,6 +60,7 @@ fun SettingsScreen(
             modifier = modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
             // エリア選択
@@ -140,6 +152,71 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 16.dp),
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(top = 16.dp))
+
+            // 番組開始通知 (リマインダー)
+            Text(
+                text = "番組開始通知",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+            )
+            if (reminders.isEmpty()) {
+                Text(
+                    text = "番組表で番組を長押しすると、放送開始時刻に通知を設定できます",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            } else {
+                reminders.forEach { reminder ->
+                    ReminderRow(
+                        reminder = reminder,
+                        onRemove = { viewModel.cancelReminder(reminder) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReminderRow(
+    reminder: com.radikk.app.data.reminder.StoredReminder,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Notifications,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(end = 8.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = reminder.programTitle,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "${reminder.stationName} ${RadikoTimeUtil.formatDate(Instant.ofEpochMilli(reminder.startEpochMillis))} " +
+                    RadikoTimeUtil.formatTime(Instant.ofEpochMilli(reminder.startEpochMillis)),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        IconButton(onClick = onRemove) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = "通知を解除",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

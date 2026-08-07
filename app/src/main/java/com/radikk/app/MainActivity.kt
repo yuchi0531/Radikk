@@ -1,5 +1,6 @@
 package com.radikk.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -8,7 +9,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -24,8 +24,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.radikk.app.data.reminder.ReminderReceiver
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.MiniPlayer
 import com.radikk.app.ui.navigation.BottomTab
@@ -34,16 +34,64 @@ import com.radikk.app.ui.screen.ProgramGuideScreen
 import com.radikk.app.ui.screen.SettingsScreen
 import com.radikk.app.ui.screen.TimefreeScreen
 import com.radikk.app.ui.theme.RadikkTheme
-import androidx.compose.runtime.collectAsState
+import kotlinx.coroutines.flow.MutableStateFlow
+
+/**
+ * 通知タップで再生する番組の情報。
+ */
+data class ReminderPlaybackRequest(
+    val stationId: String,
+    val stationName: String,
+    val programTitle: String,
+    val startEpochMillis: Long,
+    val endEpochMillis: Long,
+) {
+    companion object {
+        fun fromIntent(intent: Intent): ReminderPlaybackRequest? {
+            val stationId = intent.getStringExtra(ReminderReceiver.EXTRA_STATION_ID) ?: return null
+            val stationName = intent.getStringExtra(ReminderReceiver.EXTRA_STATION_NAME) ?: ""
+            val programTitle = intent.getStringExtra(ReminderReceiver.EXTRA_PROGRAM_TITLE) ?: ""
+            return ReminderPlaybackRequest(
+                stationId = stationId,
+                stationName = stationName,
+                programTitle = programTitle,
+                startEpochMillis = intent.getLongExtra(ReminderReceiver.EXTRA_START_EPOCH, 0L),
+                endEpochMillis = intent.getLongExtra(ReminderReceiver.EXTRA_END_EPOCH, 0L),
+            )
+        }
+    }
+}
+
+/**
+ * 通知タップからの再生イベントを Compose に伝えるイベントバス。
+ * MainActivity (onCreate / onNewIntent) が emit し、AppScaffold が購読する。
+ */
+object ReminderPlaybackEvents {
+    val requests = MutableStateFlow<ReminderPlaybackRequest?>(null)
+
+    fun emit(request: ReminderPlaybackRequest) {
+        requests.value = request
+    }
+}
 
 /**
  * Radikk のメインアクティビティ。
  * ボトムナビ 4 タブ (ライブ / 番組表 / タイムフリー / 設定) をホストする。
+ * 通知タップ (ACTION_PLAY_FROM_REMINDER) でその番組を再生する。
  */
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // 通知タップからの再生リクエスト (プロセス再生成時: onCreate で処理)
+        if (intent?.action == ACTION_PLAY_FROM_REMINDER) {
+            ReminderPlaybackRequest.fromIntent(intent)?.let {
+                ReminderPlaybackEvents.emit(it)
+            }
+        }
+
         setContent {
             val app = application as RadikkApplication
             val viewModel: AppViewModel = viewModel()
@@ -55,6 +103,20 @@ class MainActivity : ComponentActivity() {
                 AppScaffold(viewModel)
             }
         }
+    }
+
+    /** 通知タップ時 (アプリが既に起動している場合)。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == ACTION_PLAY_FROM_REMINDER) {
+            ReminderPlaybackRequest.fromIntent(intent)?.let {
+                ReminderPlaybackEvents.emit(it)
+            }
+        }
+    }
+
+    companion object {
+        const val ACTION_PLAY_FROM_REMINDER = "com.radikk.app.action.PLAY_FROM_REMINDER"
     }
 }
 
@@ -69,6 +131,21 @@ private fun AppScaffold(viewModel: AppViewModel) {
         errorMessage?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.consumePlayerError()
+        }
+    }
+
+    // 通知タップからの再生 (onCreate / onNewIntent の両方を処理)
+    val reminderRequest by ReminderPlaybackEvents.requests.collectAsState()
+    LaunchedEffect(reminderRequest) {
+        reminderRequest?.let { request ->
+            ReminderPlaybackEvents.requests.value = null // 消費済みにする
+            viewModel.playFromReminder(
+                stationId = request.stationId,
+                stationName = request.stationName,
+                programTitle = request.programTitle,
+                startEpochMillis = request.startEpochMillis,
+                endEpochMillis = request.endEpochMillis,
+            )
         }
     }
 

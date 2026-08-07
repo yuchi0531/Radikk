@@ -2,6 +2,7 @@ package com.radikk.app.ui.screen
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -18,13 +20,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -35,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,9 +50,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
+import com.radikk.app.data.reminder.StoredReminder
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.util.RadikoTimeUtil
 import java.time.Instant
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 
 /**
  * 番組表画面 (EPG グリッド)。
@@ -65,7 +80,41 @@ fun ProgramGuideScreen(
     modifier: Modifier = Modifier,
 ) {
     val stationState by viewModel.stationState.collectAsState()
+    val reminders by viewModel.reminders.collectAsState()
     var selectedDayOffset by remember { mutableStateOf(0) }
+
+    val context = LocalContext.current
+
+    // 通知設定ダイアログの対象番組
+    var reminderTarget by remember { mutableStateOf<Pair<Station, Program>?>(null) }
+
+    // 通知権限リクエスト (Android 13+)
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { granted ->
+            val target = reminderTarget
+            reminderTarget = null
+            if (granted && target != null) {
+                viewModel.setReminder(target.first, target.second)
+            } else if (!granted) {
+                viewModel.showError("通知権限が必要です。設定画面から許可してください")
+            }
+        },
+    )
+
+    /** 通知を設定する。未許可なら権限をリクエストする。 */
+    fun requestReminder(station: Station, program: Program) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+        viewModel.setReminder(station, program)
+    }
 
     // 局 → 番組リスト (EPG グリッド用に一括取得)
     var programsByStation by remember { mutableStateOf<Map<String, List<Program>>>(emptyMap()) }
@@ -73,6 +122,11 @@ fun ProgramGuideScreen(
 
     // 選択中のエリアの局一覧 (stationState から)
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
+
+    // 通知設定済みの識別子セット (局ID + 開始時刻)
+    val reminderKeys = remember(reminders) {
+        reminders.map { it.stationId + "|" + it.startEpochMillis }.toSet()
+    }
 
     // 日付チップ (今日〜7日分)
     val days = remember { (0..7).toList() }
@@ -148,12 +202,54 @@ fun ProgramGuideScreen(
                             stations = stations,
                             programsByStation = programsByStation,
                             dayOffset = selectedDayOffset,
-                            viewModel = viewModel,
+                            reminderKeys = reminderKeys,
+                            onStationClick = { station ->
+                                viewModel.playLive(station)
+                            },
+                            onProgramClick = { station, program ->
+                                if (program.isOnAir()) {
+                                    viewModel.playLive(station)
+                                } else {
+                                    viewModel.playTimefree(station, program)
+                                }
+                            },
+                            onReminderClick = { station, program ->
+                                reminderTarget = station to program
+                            },
                         )
                     }
                 }
             }
         }
+    }
+
+    // 通知設定ダイアログ
+    reminderTarget?.let { (station, program) ->
+        ReminderDialog(
+            station = station,
+            program = program,
+            isSet = reminderKeys.contains(station.id + "|" + program.ft.toEpochMilli()),
+            onSet = {
+                requestReminder(station, program)
+                // 権限リクエストが発生する場合は reminderTarget を保持する
+                // (onResult で参照するため)。権限が許可済みなら即時設定される。
+                val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(
+                        context, Manifest.permission.POST_NOTIFICATIONS
+                    ) == PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    reminderTarget = null
+                }
+            },
+            onCancel = {
+                val id = com.radikk.app.data.reminder.ReminderRepository.reminderId(
+                    station.id, program.ft.toEpochMilli()
+                )
+                reminders.firstOrNull { it.id == id }?.let { viewModel.cancelReminder(it) }
+                reminderTarget = null
+            },
+            onDismiss = { reminderTarget = null },
+        )
     }
 }
 
@@ -182,7 +278,10 @@ private fun EpgGrid(
     stations: List<Station>,
     programsByStation: Map<String, List<Program>>,
     dayOffset: Int,
-    viewModel: AppViewModel,
+    reminderKeys: Set<String>,
+    onStationClick: (Station) -> Unit,
+    onProgramClick: (Station, Program) -> Unit,
+    onReminderClick: (Station, Program) -> Unit,
 ) {
     // 番組表の開始時刻 = 選択日の 5:00 JST
     val gridStart = RadikoTimeUtil.todayDayStart()
@@ -219,7 +318,7 @@ private fun EpgGrid(
                 stations.forEach { station ->
                     StationHeader(
                         station = station,
-                        onClick = { viewModel.playLive(station) },
+                        onClick = { onStationClick(station) },
                     )
                 }
             }
@@ -265,12 +364,12 @@ private fun EpgGrid(
                         station = station,
                         programs = programsByStation[station.id].orEmpty(),
                         gridStart = gridStart,
+                        reminderKeys = reminderKeys,
                         onProgramClick = { program ->
-                            if (program.isOnAir()) {
-                                viewModel.playLive(station)
-                            } else {
-                                viewModel.playTimefree(station, program)
-                            }
+                            onProgramClick(station, program)
+                        },
+                        onReminderClick = { program ->
+                            onReminderClick(station, program)
                         },
                     )
                 }
@@ -321,7 +420,9 @@ private fun StationColumn(
     station: Station,
     programs: List<Program>,
     gridStart: Instant,
+    reminderKeys: Set<String>,
     onProgramClick: (Program) -> Unit,
+    onReminderClick: (Program) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -348,7 +449,9 @@ private fun StationColumn(
                 ProgramCell(
                     program = program,
                     durationHours = durationHours,
+                    isReminderSet = reminderKeys.contains(station.id + "|" + program.ft.toEpochMilli()),
                     onClick = { onProgramClick(program) },
+                    onLongClick = { onReminderClick(program) },
                 )
                 cursor = cellEnd
             }
@@ -363,13 +466,15 @@ private fun StationColumn(
 
 /**
  * 番組 1 セル。放送時間に応じた高さで表示し、放送中をハイライトする。
- * 現在時刻ラインは「今日」かつ放送中の場合に上部に表示する。
+ * タップで再生、長押しで通知設定。通知設定済みならベルアイコンを表示する。
  */
 @Composable
 private fun ProgramCell(
     program: Program,
     durationHours: Double,
+    isReminderSet: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val isOnAir = program.isOnAir()
 
@@ -384,15 +489,33 @@ private fun ProgramCell(
                     MaterialTheme.colorScheme.surfaceVariant
                 }
             )
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
             .padding(4.dp),
     ) {
         Column {
-            Text(
-                text = "${RadikoTimeUtil.formatTime(program.ft)}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "${RadikoTimeUtil.formatTime(program.ft)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // 通知設定済みならベルアイコン
+                if (isReminderSet) {
+                    Icon(
+                        imageVector = Icons.Filled.Notifications,
+                        contentDescription = "通知設定済み",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
             Text(
                 text = program.title,
                 style = MaterialTheme.typography.bodySmall,
@@ -401,6 +524,55 @@ private fun ProgramCell(
             )
         }
     }
+}
+
+/**
+ * 番組開始通知の設定/解除ダイアログ。
+ */
+@Composable
+private fun ReminderDialog(
+    station: Station,
+    program: Program,
+    isSet: Boolean,
+    onSet: () -> Unit,
+    onCancel: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("番組開始通知") },
+        text = {
+            Column {
+                Text(
+                    text = program.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "${station.name} ${RadikoTimeUtil.formatDate(program.ft)} " +
+                        RadikoTimeUtil.formatTime(program.ft),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            if (isSet) {
+                TextButton(onClick = onCancel) {
+                    Text("解除", color = MaterialTheme.colorScheme.error)
+                }
+                TextButton(onClick = onDismiss) { Text("閉じる") }
+            } else {
+                TextButton(onClick = onSet) { Text("設定") }
+            }
+        },
+        dismissButton = {
+            if (!isSet) {
+                TextButton(onClick = onDismiss) { Text("キャンセル") }
+            }
+        },
+    )
 }
 
 /** Modifier 拡張: 横スクロール状態を共有する。 */
