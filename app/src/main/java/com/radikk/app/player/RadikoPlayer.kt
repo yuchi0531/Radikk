@@ -12,9 +12,17 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.session.MediaSession
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * radiko 再生エンジン (Media3/ExoPlayer ラッパー)。
@@ -37,6 +45,9 @@ class RadikoPlayer(
 ) {
     companion object {
         private const val TAG = "RadikoPlayer"
+
+        /** シークバー更新のポーリング間隔 */
+        private const val POSITION_POLL_MS = 500L
 
         /** 検証済みの UA (radiko 公式アプリと同等) */
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 10; Pixel 4 XL) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.87 Mobile Safari/537.36"
@@ -82,6 +93,14 @@ class RadikoPlayer(
 
     private var dataSourceFactory: DefaultHttpDataSource.Factory? = null
 
+    /** 位置ポーリング用スコープ (再生中に positionMs を定期的に更新する) */
+    private val pollScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var pollJob: Job? = null
+
+    /** release() されたか (ポーリングが解放済み player にアクセスしないためのガード) */
+    @Volatile
+    private var released = false
+
     init {
         _player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -97,6 +116,8 @@ class RadikoPlayer(
                 Log.e(TAG, "  message=${error.message}")
                 val classified = classifyError(error)
                 _uiState.value = _uiState.value.copy(error = classified, isPlaying = false, isLoading = false)
+                // エラー後も poll を確実に停止する (isPlaying=false で updateState が poll を止める)
+                updateState()
             }
         })
         applyAudioAttributes()
@@ -156,12 +177,23 @@ class RadikoPlayer(
         _player.seekTo(positionMs)
     }
 
+    /** 再生エラーをクリアする (Snackbar 表示後の消費用)。 */
+    fun clearError() {
+        _uiState.value = _uiState.value.copy(error = null)
+    }
+
     /** 停止してリソース解放 */
     fun stop() {
         _player.stop()
     }
 
     fun release() {
+        // 位置ポーリングを停止してから player を解放する
+        // (解放済み ExoPlayer へのアクセスで IllegalStateException になるのを防ぐ)
+        released = true
+        pollJob?.cancel()
+        pollJob = null
+        pollScope.cancel()
         mediaSession.release()
         _player.release()
     }
@@ -184,15 +216,39 @@ class RadikoPlayer(
     }
 
     private fun updateState() {
+        // release() 後にリスナーから呼ばれることがあるため、解放済み player にアクセスしない
+        if (released) return
+        val isPlaying = _player.isPlaying
+        val isReady = _player.playbackState == Player.STATE_READY
         _uiState.value = PlayerUiState(
-            isPlaying = _player.isPlaying,
+            isPlaying = isPlaying,
             isLoading = _player.playbackState == Player.STATE_BUFFERING || _player.playbackState == Player.STATE_IDLE,
             isBuffering = _player.playbackState == Player.STATE_BUFFERING,
-            isReady = _player.playbackState == Player.STATE_READY,
+            isReady = isReady,
             error = _uiState.value.error,
             positionMs = _player.currentPosition,
             durationMs = _player.duration,
         )
+
+        // 再生中は位置をポーリングしてシークバーを進める
+        if (isPlaying && !released) {
+            if (pollJob == null || pollJob?.isActive != true) {
+                pollJob = pollScope.launch {
+                    while (isActive && !released) {
+                        runCatching {
+                            _uiState.value = _uiState.value.copy(
+                                positionMs = _player.currentPosition,
+                                durationMs = _player.duration,
+                            )
+                        }
+                        delay(POSITION_POLL_MS)
+                    }
+                }
+            }
+        } else {
+            pollJob?.cancel()
+            pollJob = null
+        }
     }
 
     /** PlaybackException を分類する */

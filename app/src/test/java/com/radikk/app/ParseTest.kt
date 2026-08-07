@@ -3,6 +3,7 @@ package com.radikk.app
 import com.radikk.app.data.repository.ProgramRepository
 import com.radikk.app.data.repository.StationRepository
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -85,5 +86,41 @@ class ParseTest {
         assertTrue(p.imgUrl!!.contains("abc.jpg"))
         // JST 20260807 05:00 = UTC 20260806 20:00
         assertEquals(20, p.ft.atZone(com.radikk.app.util.RadikoTimeUtil.UTC).hour)
+    }
+
+    @Test
+    fun `null 文字列の performer は null に正規化される`() {
+        val repo = ProgramRepository(
+            apiClient = com.radikk.app.data.api.RadikoApiClient(),
+            authTokenProvider = { "dummy" }
+        )
+        val json = """
+            {
+              "stations": [
+                {
+                  "station_id": "TBS",
+                  "programs": {
+                    "program": [
+                      {
+                        "ft": "20260807050000",
+                        "to": "20260807060000",
+                        "title": "テスト番組",
+                        "description": null,
+                        "performer": "null",
+                        "episode_id": null,
+                        "img": null
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        val programs = repo.parseProgramJson(json, "TBS")
+        assertEquals(1, programs.size)
+        val p = programs[0]
+        assertNull(p.performer)  // "null" 文字列が null になる
+        assertNull(p.description) // JSON null が null になる
+        assertNull(p.imgUrl)
     }
 }

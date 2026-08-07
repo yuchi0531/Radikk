@@ -9,9 +9,12 @@ import com.radikk.app.data.datastore.ThemeMode
 import com.radikk.app.data.model.AuthSession
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
+import com.radikk.app.data.programcache.ProgramCacheRepository
 import com.radikk.app.data.reminder.ReminderRepository
 import com.radikk.app.data.reminder.ReminderScheduler
 import com.radikk.app.data.reminder.StoredReminder
+import com.radikk.app.data.timefree.CachedTimefreeProgram
+import com.radikk.app.data.timefree.TimefreeCacheRepository
 import com.radikk.app.player.PlaybackService
 import com.radikk.app.player.RadikoPlayer
 import com.radikk.app.player.StreamUrlResolver
@@ -36,6 +39,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val stationRepo = app.stationRepository
     private val programRepo = app.programRepository
     private val reminderRepo = app.reminderRepository
+    private val timefreeCache = app.timefreeCacheRepository
+    private val programCache = app.programCacheRepository
 
     val radikoPlayer = RadikoPlayer(application)
 
@@ -76,6 +81,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val stationName: String,
         val title: String,
         val isTimefree: Boolean,
+        val stationLogoUrl: String? = null,
+        val programImgUrl: String? = null,
     )
 
     private val _errorMessage = MutableStateFlow<String?>(null)
@@ -122,6 +129,85 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val scheduler = ReminderScheduler(app)
             scheduler.rescheduleAll(reminderRepo.currentReminders())
         }
+
+        // 起動時に選択エリア全局の「今日分」番組表を一括プリロード (一日一回)
+        viewModelScope.launch {
+            preloadTodayPrograms()
+        }
+    }
+
+    /**
+     * 選択エリア全局の「今日分」番組表を並列取得して永続キャッシュに保存する。
+     * 今日すでに取得済みのエリア・日付はスキップする (一日一回制御)。
+     */
+    private suspend fun preloadTodayPrograms() {
+        runCatching {
+            // 保存済み設定 (エリア) が反映されるのを待つ。
+            // 初期値は JP13 のため、設定読み込み前に走ると保存済みエリアと不一致になる。
+            val areaId = settings.currentSettings().areaId.ifEmpty { _selectedAreaId.value }
+            val apiDate = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart())
+            if (programCache.isFetchedToday(areaId, apiDate)) return@runCatching
+
+            // 局一覧のロードを待つ
+            val stations = stationRepo.getStations().let { all ->
+                stationRepo.filterByArea(all, areaId)
+            }
+            if (stations.isEmpty()) return@runCatching
+
+            // 全局を並列取得してキャッシュへ保存
+            val programsByStation = coroutineScope {
+                stations.map { station ->
+                    async {
+                        try {
+                            station.id to programRepo.getPrograms(station.id, apiDate)
+                        } catch (e: Exception) {
+                            station.id to emptyList<Program>()
+                        }
+                    }
+                }.associate { it.await() }
+            }
+            programCache.putPrograms(areaId, apiDate, programsByStation)
+        }
+    }
+
+    /**
+     * 指定日付の全局番組表を返す。永続キャッシュに「今日分」がなければ取得して保存する。
+     * EPG 番組表で使う (キャッシュ優先で高速化)。
+     */
+    suspend fun getProgramsForStationsWithCache(
+        stations: List<Station>,
+        dayOffset: Int,
+    ): Map<String, List<Program>> {
+        val areaId = _selectedAreaId.value
+        val dayStart = RadikoTimeUtil.todayDayStart().plusSeconds(dayOffset * 24 * 3600L)
+        val apiDate = RadikoTimeUtil.apiDateFor(dayStart)
+
+        // 今日分なら永続キャッシュを確認 (要求された全局がキャッシュ済みの場合のみ使用)
+        val today = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart())
+        if (apiDate == today && programCache.isFetchedToday(areaId, apiDate)) {
+            val cached = programCache.getPrograms(areaId, apiDate)
+            // キャッシュが要求された全局をカバーしている場合のみ使用する
+            // (一部欠けている場合は全取得して欠落を補う)
+            val coversAll = stations.all { cached.containsKey(it.id) }
+            if (coversAll) return cached
+        }
+
+        // キャッシュなし → 全局並列取得して保存
+        val programsByStation = coroutineScope {
+            stations.map { station ->
+                async {
+                    try {
+                        station.id to programRepo.getPrograms(station.id, apiDate)
+                    } catch (e: Exception) {
+                        station.id to emptyList<Program>()
+                    }
+                }
+            }.associate { it.await() }
+        }
+        if (apiDate == today) {
+            programCache.putPrograms(areaId, apiDate, programsByStation)
+        }
+        return programsByStation
     }
 
     /**
@@ -164,6 +250,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             settings.setAreaId(areaId)
             _selectedAreaId.value = areaId
             loadStations()
+            // 新エリアの「今日分」番組表をプリロードする (検索・番組表を即時利用可能に)
+            preloadTodayPrograms()
         }
     }
 
@@ -200,6 +288,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     stationName = station.name,
                     title = "ライブ放送",
                     isTimefree = false,
+                    stationLogoUrl = station.logoUrl,
                 )
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "ライブ再生を開始できませんでした"
@@ -232,6 +321,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     stationName = station.name,
                     title = program.title,
                     isTimefree = true,
+                    stationLogoUrl = station.logoUrl,
+                    programImgUrl = program.imgUrl,
                 )
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "タイムフリー再生を開始できませんでした"
@@ -266,7 +357,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val now = Instant.now()
                 val start = Instant.ofEpochMilli(startEpochMillis)
                 val end = Instant.ofEpochMilli(endEpochMillis)
-                if (now.isBefore(end)) {
+                // endEpochMillis が不正 (0 など) の場合は「放送中」とみなしてライブ再生する
+                val isBroadcasting = endEpochMillis <= 0 || now.isBefore(end)
+                if (isBroadcasting) {
                     // 放送中 (開始前後の誤差含む) → ライブ再生
                     playLive(station)
                 } else {
@@ -338,27 +431,158 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * 複数局の番組表を並列取得する (EPG グリッド用)。
+     * 今日分は永続キャッシュを優先し、キャッシュ済みならネットワークを回避する。
      * @return 局ID → 番組リスト (失敗した局は空リスト)
      */
     suspend fun getProgramsForStations(stations: List<Station>, dayOffset: Int): Map<String, List<Program>> =
-        coroutineScope {
-            val dayStart = RadikoTimeUtil.todayDayStart().plusSeconds(dayOffset * 24 * 3600L)
-            val apiDate = RadikoTimeUtil.apiDateFor(dayStart)
-            stations.map { station ->
-                async {
-                    try {
-                        station.id to programRepo.getPrograms(station.id, apiDate)
-                    } catch (e: Exception) {
-                        station.id to emptyList<Program>()
-                    }
+        getProgramsForStationsWithCache(stations, dayOffset)
+
+    // --- タイムフリー (キャッシュ + 検索) ---
+
+    /**
+     * タイムフリー番組を取得し、キャッシュに保存する。
+     * 指定局の指定日の番組表を取得してキャッシュに蓄積する。
+     * 取得した番組はタイムフリー期間内 (過去7日) のもののみキャッシュする。
+     */
+    suspend fun loadAndCacheTimefree(stationId: String, stationName: String, dayOffset: Int): List<Program> {
+        val dayStart = RadikoTimeUtil.todayDayStart().plusSeconds(dayOffset * 24 * 3600L)
+        val apiDate = RadikoTimeUtil.apiDateFor(dayStart)
+
+        // 今日分かつ永続キャッシュ済みなら、キャッシュから取得 (ネットワーク回避)
+        val today = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart())
+        val cachedFromDisk: List<Program>? = if (apiDate == today) {
+            runCatching {
+                val areaId = _selectedAreaId.value
+                val byStation = programCache.getPrograms(areaId, apiDate)
+                // キーが存在すれば「取得済み」 (空リスト = 放送休止 も含む)。キーが無ければ未取得。
+                if (byStation.containsKey(stationId)) {
+                    byStation[stationId].orEmpty()
+                } else {
+                    null
                 }
-            }.associate { it.await() }
+            }.getOrNull()
+        } else {
+            null
         }
+        val programs = cachedFromDisk ?: programRepo.getPrograms(stationId, apiDate)
+
+        // 現在のキャッシュにマージして保存
+        val current = timefreeCache.currentCachedPrograms()[stationId].orEmpty()
+        val cachedWithNames = programs.map { p ->
+            timefreeCache.toCached(p).copy(stationName = stationName)
+        }
+        // 重複除去 (ft で判別) + 期間内のみ保持
+        val merged = (current + cachedWithNames)
+            .distinctBy { it.ftEpochMillis }
+            .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
+        timefreeCache.putStationPrograms(stationId, merged)
+        return programs
+    }
+
+    /**
+     * タイムフリー番組を検索する。
+     * 永続キャッシュ (TimefreeCacheRepository) + 今日の番組表キャッシュ (ProgramCacheRepository) を
+     * マージして全局横断検索する。開いた局しか出ない問題を解消する。
+     *
+     * 検索結果は「現在のエリアの局」のみに限定する (エリア変更後も旧エリアの番組が混ざらない)。
+     * @param query 検索キーワード (空なら全件・新しい順)
+     * @param stations 現在のエリアの局一覧 (フィルタと局名補完用)
+     */
+    suspend fun searchTimefree(query: String, stations: List<Station>): List<CachedTimefreeProgram> {
+        if (stations.isEmpty()) return emptyList()
+        val byId = stations.associateBy { it.id }
+        val stationIds = byId.keys
+        // 1) タイムフリーキャッシュ (局選択で取得済みの分) — 現在エリアの局のみ
+        val timefree = timefreeCache.currentCachedPrograms().values.flatten()
+            .filter { it.stationId in stationIds }
+        // 2) 今日の番組表キャッシュ (起動時プリロード分) をタイムフリー期間内のものに変換
+        val todayCache = runCatching {
+            val areaId = _selectedAreaId.value
+            val apiDate = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart())
+            programCache.getPrograms(areaId, apiDate).values.flatten()
+                .filter { it.stationId in stationIds }
+                .map { timefreeCache.toCached(it) }
+        }.getOrDefault(emptyList())
+        // マージ (ft で重複除去) + 期間内フィルタ + 局名補完
+        val enriched = (timefree + todayCache)
+            .distinctBy { it.stationId + "|" + it.ftEpochMillis }
+            .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
+            .map { timefreeCache.withStationName(it, byId[it.stationId]?.name ?: "") }
+        if (query.isBlank()) {
+            return enriched.sortedByDescending { it.ftEpochMillis }
+        }
+        val lower = query.trim().lowercase()
+        return enriched.filter {
+            it.title.lowercase().contains(lower) ||
+                it.performer?.lowercase()?.contains(lower) == true ||
+                it.stationName.lowercase().contains(lower)
+        }.sortedByDescending { it.ftEpochMillis }
+    }
+
+    /**
+     * タイムフリーのキャッシュ済み一覧を取得する (検索なし・局名補完済み)。
+     * タイムフリーキャッシュ + 今日の番組表キャッシュをマージする。
+     * 現在のエリアの局のみに限定する。
+     */
+    suspend fun cachedTimefreePrograms(stations: List<Station>): List<CachedTimefreeProgram> {
+        if (stations.isEmpty()) return emptyList()
+        val byId = stations.associateBy { it.id }
+        val stationIds = byId.keys
+        val timefree = timefreeCache.currentCachedPrograms().values.flatten()
+            .filter { it.stationId in stationIds }
+        val todayCache = runCatching {
+            val areaId = _selectedAreaId.value
+            val apiDate = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart())
+            programCache.getPrograms(areaId, apiDate).values.flatten()
+                .filter { it.stationId in stationIds }
+                .map { timefreeCache.toCached(it) }
+        }.getOrDefault(emptyList())
+        return (timefree + todayCache)
+            .distinctBy { it.stationId + "|" + it.ftEpochMillis }
+            .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
+            .map { timefreeCache.withStationName(it, byId[it.stationId]?.name ?: "") }
+            .sortedByDescending { it.ftEpochMillis }
+    }
+
+    /** キャッシュ済みタイムフリー番組を再生する。 */
+    fun playCachedTimefree(station: Station, cached: CachedTimefreeProgram) {
+        viewModelScope.launch {
+            _errorMessage.value = null
+            try {
+                applyBackgroundPlayback(_settings.value.backgroundPlayback)
+
+                val session = auth.getSession(_selectedAreaId.value)
+                radikoPlayer.setAuth(session.token, session.areaId)
+
+                val resolver = StreamUrlResolver(app.apiClient)
+                val medialistUrl = resolver.resolveTimefreeMedialistUrl(
+                    stationId = station.id,
+                    token = session.token,
+                    from = Instant.ofEpochMilli(cached.ftEpochMillis),
+                    to = Instant.ofEpochMilli(cached.toEpochMillis),
+                )
+                radikoPlayer.playMedialist(medialistUrl)
+
+                _nowPlaying.value = NowPlaying(
+                    stationId = station.id,
+                    stationName = station.name,
+                    title = cached.title,
+                    isTimefree = true,
+                    stationLogoUrl = station.logoUrl,
+                    programImgUrl = cached.imgUrl,
+                )
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "タイムフリー再生を開始できませんでした"
+            }
+        }
+    }
 
     /** 再生エラーを UI に反映する。 */
     fun consumePlayerError(): String? {
         val err = playerUiState.value.error
         _errorMessage.value = err?.message
+        // プレイヤーのエラーをクリアする (次回再生時に古いエラーを再表示しない)
+        radikoPlayer.clearError()
         return err?.message
     }
 

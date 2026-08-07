@@ -96,10 +96,10 @@ class ProgramRepository(
                             ft = RadikoTimeUtil.parseJst14ToInstant(ftStr),
                             to = RadikoTimeUtil.parseJst14ToInstant(toStr),
                             title = title,
-                            description = p["description"]?.jsonPrimitive?.content,
-                            performer = p["performer"]?.jsonPrimitive?.content,
-                            episodeId = p["episode_id"]?.jsonPrimitive?.content,
-                            imgUrl = p["img"]?.jsonPrimitive?.content,
+                            description = normalizeNullable(p["description"]?.jsonPrimitive?.content),
+                            performer = normalizeNullable(p["performer"]?.jsonPrimitive?.content),
+                            episodeId = normalizeNullable(p["episode_id"]?.jsonPrimitive?.content),
+                            imgUrl = normalizeNullable(p["img"]?.jsonPrimitive?.content),
                         )
                     )
                 } catch (_: Exception) {
@@ -109,6 +109,13 @@ class ProgramRepository(
         }
         return programs.sortedBy { it.ft }
     }
+
+    /**
+     * API の null 相当値 ("null" 文字列や空白) を null に正規化する。
+     * radiko の番組 JSON は performer 等に "null" 文字列を返すことがある。
+     */
+    private fun normalizeNullable(value: String?): String? =
+        if (value.isNullOrBlank() || value == "null") null else value
 
     /** キャッシュをクリアする (認証キャッシュ削除時など)。 */
     suspend fun clearCache() = cacheMutex.withLock {

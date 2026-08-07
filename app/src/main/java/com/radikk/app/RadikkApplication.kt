@@ -5,9 +5,11 @@ import com.radikk.app.data.api.FullKeyProvider
 import com.radikk.app.data.api.RadikoApiClient
 import com.radikk.app.data.auth.AuthRepository
 import com.radikk.app.data.datastore.SettingsRepository
+import com.radikk.app.data.programcache.ProgramCacheRepository
 import com.radikk.app.data.reminder.ReminderRepository
 import com.radikk.app.data.repository.ProgramRepository
 import com.radikk.app.data.repository.StationRepository
+import com.radikk.app.data.timefree.TimefreeCacheRepository
 
 /**
  * Radikk アプリケーション。
@@ -27,6 +29,10 @@ class RadikkApplication : Application() {
         private set
     lateinit var reminderRepository: ReminderRepository
         private set
+    lateinit var timefreeCacheRepository: TimefreeCacheRepository
+        private set
+    lateinit var programCacheRepository: ProgramCacheRepository
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -44,5 +50,7 @@ class RadikkApplication : Application() {
             runCatching { authRepository.getSession(areaId).token }.getOrNull()
         }
         reminderRepository = ReminderRepository(this)
+        timefreeCacheRepository = TimefreeCacheRepository(this)
+        programCacheRepository = ProgramCacheRepository(this)
     }
 }

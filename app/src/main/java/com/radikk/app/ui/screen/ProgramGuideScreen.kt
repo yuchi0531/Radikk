@@ -42,16 +42,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
 import com.radikk.app.data.reminder.StoredReminder
 import com.radikk.app.ui.AppViewModel
+import com.radikk.app.ui.component.ProgramDetailDialog
 import com.radikk.app.util.RadikoTimeUtil
 import java.time.Instant
 import android.Manifest
@@ -87,6 +91,9 @@ fun ProgramGuideScreen(
 
     // 通知設定ダイアログの対象番組
     var reminderTarget by remember { mutableStateOf<Pair<Station, Program>?>(null) }
+
+    // 番組詳細ダイアログの対象番組
+    var detailTarget by remember { mutableStateOf<Pair<Station, Program>?>(null) }
 
     // 通知権限リクエスト (Android 13+)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -207,11 +214,8 @@ fun ProgramGuideScreen(
                                 viewModel.playLive(station)
                             },
                             onProgramClick = { station, program ->
-                                if (program.isOnAir()) {
-                                    viewModel.playLive(station)
-                                } else {
-                                    viewModel.playTimefree(station, program)
-                                }
+                                // 番組タップ → 詳細ダイアログを表示
+                                detailTarget = station to program
                             },
                             onReminderClick = { station, program ->
                                 reminderTarget = station to program
@@ -249,6 +253,43 @@ fun ProgramGuideScreen(
                 reminderTarget = null
             },
             onDismiss = { reminderTarget = null },
+        )
+    }
+
+    // 番組詳細ダイアログ
+    detailTarget?.let { (station, program) ->
+        ProgramDetailDialog(
+            station = station,
+            program = program,
+            isOnAir = program.isOnAir(),
+            isPast = program.to.isBefore(Instant.now()),
+            isReminderSet = reminderKeys.contains(station.id + "|" + program.ft.toEpochMilli()),
+            onListen = {
+                detailTarget = null
+                when {
+                    program.isOnAir() -> viewModel.playLive(station)
+                    program.to.isBefore(Instant.now()) -> viewModel.playTimefree(station, program)
+                    // 未来の番組は再生不可 (ボタンは無効化されているが、念のためガード)
+                    else -> viewModel.showError("この番組はまだ放送されていません")
+                }
+            },
+            onReminderClick = {
+                // 通知設定/解除へ遷移 (既存の ReminderDialog を開く)
+                val isSet = reminderKeys.contains(station.id + "|" + program.ft.toEpochMilli())
+                if (isSet) {
+                    // 解除する場合は詳細ダイアログを閉じる
+                    detailTarget = null
+                    val id = com.radikk.app.data.reminder.ReminderRepository.reminderId(
+                        station.id, program.ft.toEpochMilli()
+                    )
+                    reminders.firstOrNull { it.id == id }?.let { viewModel.cancelReminder(it) }
+                } else {
+                    // 詳細ダイアログを閉じてから ReminderDialog を開く (重複表示防止)
+                    detailTarget = null
+                    reminderTarget = station to program
+                }
+            },
+            onDismiss = { detailTarget = null },
         )
     }
 }
@@ -384,29 +425,45 @@ private fun StationHeader(
     station: Station,
     onClick: () -> Unit,
 ) {
-    Column(
+    Row(
         modifier = Modifier
             .width(STATION_WIDTH_DP)
             .height(HOUR_HEIGHT_DP)
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick)
             .padding(horizontal = 6.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = station.name,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Text(
-            text = station.id,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        // 局ロゴ (ある場合のみ)
+        if (station.logoUrl != null) {
+            AsyncImage(
+                model = station.logoUrl,
+                contentDescription = station.name,
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp)),
+                contentScale = ContentScale.Fit,
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(
+                text = station.name,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = station.id,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

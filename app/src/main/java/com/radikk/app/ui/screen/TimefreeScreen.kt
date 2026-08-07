@@ -1,5 +1,6 @@
 package com.radikk.app.ui.screen
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,10 +13,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -25,6 +31,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,13 +39,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
+import com.radikk.app.data.timefree.CachedTimefreeProgram
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.StationCard
 import com.radikk.app.util.RadikoTimeUtil
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import java.time.Instant
 
 /**
  * タイムフリー再生画面。
- * 局選択 → 過去7日分の番組リスト → タップで再生 (シーク可能)。
+ *
+ * - 検索バー: キャッシュ済み番組を番組名/パーソナリティ/局名で検索
+ * - 局選択: 過去7日分の番組リスト (取得時にキャッシュへ保存)
+ * - タップで再生 (シーク可能)
+ *
+ * キャッシュは DataStore に永続化され、タイムフリー期間外 (過去7日より前) の
+ * 番組は自動的に破棄される。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,15 +69,53 @@ fun TimefreeScreen(
     var programs by remember { mutableStateOf<List<Program>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
 
+    // 局選択中は戻るボタンで局一覧（検索モード）へ戻す。
+    // 局一覧では MainActivity 側の BackHandler がホーム（ライブ）タブへ戻る。
+    BackHandler(enabled = selectedStation != null) {
+        selectedStation = null
+    }
+
+    // 検索状態
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<CachedTimefreeProgram>>(emptyList()) }
+    var searchLoading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var searchJob by remember { mutableStateOf<Job?>(null) }
+
+    // 選択中のエリアの局一覧
+    val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
+
+    // エリア変更後、選択中の局が現在のエリアに存在しない場合は一覧へ戻す
+    LaunchedEffect(stations.map { it.id }.joinToString(",")) {
+        val current = selectedStation
+        if (current != null && stations.none { it.id == current.id }) {
+            selectedStation = null
+        }
+    }
+
     // 過去7日分 (0=今日, 1=昨日, ...)
     val days = remember { (0..7).toList() }
 
+    // 検索実行 (デバウンス付き: 300ms)
+    // stations をキーに含める (エリア変更時に古いエリアの検索結果が残らないようにする)
+    LaunchedEffect(searchQuery, selectedStation, stations.map { it.id }.joinToString(",")) {
+        if (selectedStation != null) return@LaunchedEffect // 局選択モードでは検索しない
+        searchJob?.cancel()
+        searchJob = scope.launch {
+            kotlinx.coroutines.delay(300)
+            searchLoading = true
+            searchResults = viewModel.searchTimefree(searchQuery, stations)
+            searchLoading = false
+        }
+    }
+
+    // 局選択時の番組取得 (キャッシュに保存)
     LaunchedEffect(selectedStation?.id, selectedDayOffset) {
         val station = selectedStation ?: return@LaunchedEffect
         loading = true
         try {
             // offset は「何日前」を表す (0=今日, 1=昨日, ...)
-            programs = viewModel.getPrograms(station.id, -selectedDayOffset)
+            programs = viewModel.loadAndCacheTimefree(station.id, station.name, -selectedDayOffset)
         } catch (e: Exception) {
             programs = emptyList()
         } finally {
@@ -89,20 +144,80 @@ fun TimefreeScreen(
                 }
                 is AppViewModel.StationUiState.Success -> {
                     if (selectedStation == null) {
-                        // 局選択
-                        LazyColumn(
-                            contentPadding = PaddingValues(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            items(state.stations, key = { it.id }) { station ->
-                                StationCard(
-                                    station = station,
-                                    onClick = { selectedStation = station },
-                                )
+                        // 検索モード (全局横断)
+                        Column(Modifier.fillMaxSize()) {
+                            // 検索バー
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                placeholder = { Text("番組名・パーソナリティで検索") },
+                                leadingIcon = {
+                                    Icon(Icons.Filled.Search, contentDescription = null)
+                                },
+                                singleLine = true,
+                            )
+
+                            if (searchLoading) {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(32.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator()
+                                }
+                            } else if (searchQuery.isNotBlank()) {
+                                // 検索結果一覧 (全局横断)
+                                if (searchResults.isEmpty()) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(32.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Text(
+                                            "該当する番組がありません",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                } else {
+                                    LazyColumn(
+                                        contentPadding = PaddingValues(16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    ) {
+                                        items(searchResults, key = { it.stationId + "|" + it.ftEpochMillis }) { cached ->
+                                            val station = stations.firstOrNull { it.id == cached.stationId }
+                                            SearchResultRow(
+                                                cached = cached,
+                                                onClick = {
+                                                    if (station != null) {
+                                                        viewModel.playCachedTimefree(station, cached)
+                                                    }
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                // 局一覧 (タップでその局の番組リストへ)
+                                LazyColumn(
+                                    contentPadding = PaddingValues(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    items(stations, key = { it.id }) { station ->
+                                        StationCard(
+                                            station = station,
+                                            onClick = { selectedStation = station },
+                                        )
+                                    }
+                                }
                             }
                         }
                     } else {
-                        // 番組リスト
+                        // 局選択 → 番組リスト
                         selectedStation?.let { station ->
                             Column {
                                 // ヘッダー
@@ -196,6 +311,56 @@ fun TimefreeScreen(
 }
 
 /**
+ * 検索結果の行。
+ */
+@Composable
+private fun SearchResultRow(
+    cached: CachedTimefreeProgram,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = cached.stationName,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                text = "${RadikoTimeUtil.formatDate(Instant.ofEpochMilli(cached.ftEpochMillis))} " +
+                    "${RadikoTimeUtil.formatTime(Instant.ofEpochMilli(cached.ftEpochMillis))}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = cached.title,
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        // "null" 文字列は API の null 相当なので表示しない
+        if (!cached.performer.isNullOrBlank() && cached.performer != "null") {
+            Text(
+                text = cached.performer,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+/**
  * タイムフリー再生可能な番組の行。
  */
 @Composable
@@ -232,7 +397,8 @@ private fun TimefreeProgramRow(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        if (program.performer != null) {
+        // "null" 文字列は API の null 相当なので表示しない
+        if (!program.performer.isNullOrBlank() && program.performer != "null") {
             Text(
                 text = program.performer,
                 style = MaterialTheme.typography.bodySmall,
@@ -241,7 +407,7 @@ private fun TimefreeProgramRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        androidx.compose.material3.HorizontalDivider(
+        HorizontalDivider(
             modifier = Modifier.padding(top = 8.dp),
         )
     }

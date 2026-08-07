@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,10 +24,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.radikk.app.data.reminder.ReminderReceiver
 import com.radikk.app.ui.AppViewModel
+import com.radikk.app.ui.component.FullPlayerScreen
 import com.radikk.app.ui.component.MiniPlayer
 import com.radikk.app.ui.navigation.BottomTab
 import com.radikk.app.ui.screen.LiveScreen
@@ -123,8 +126,21 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppScaffold(viewModel: AppViewModel) {
     var selectedTab by remember { mutableStateOf(BottomTab.LIVE) }
+    var showFullPlayer by remember { mutableStateOf(false) }
     val errorMessage by viewModel.errorMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // ホーム（ライブ）タブ以外で戻るボタンを押したらホームへ戻る。
+    // ホームタブではバックを無効にして、システム標準の動作（アプリ終了）に委ねる。
+    // 各画面内のサブ状態（局選択中など）は各画面側の BackHandler が先に消費する。
+    BackHandler(enabled = selectedTab != BottomTab.LIVE) {
+        selectedTab = BottomTab.LIVE
+    }
+    // 全画面プレイヤー表示中はバックで閉じる。
+    // 最後に登録した BackHandler が優先されるため、こちらを後に配置する。
+    BackHandler(enabled = showFullPlayer) {
+        showFullPlayer = false
+    }
 
     // エラーメッセージを Snackbar で表示
     LaunchedEffect(errorMessage) {
@@ -149,39 +165,57 @@ private fun AppScaffold(viewModel: AppViewModel) {
         }
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        bottomBar = {
-            Column {
-                // ミニプレイヤー (再生中のみ表示)
-                MiniPlayer(
-                    viewModel = viewModel,
-                    onClick = { /* Phase 3 後半: フルプレイヤー表示 */ },
-                )
-                NavigationBar {
-                    BottomTab.entries.forEach { tab ->
-                        NavigationBarItem(
-                            selected = selectedTab == tab,
-                            onClick = { selectedTab = tab },
-                            icon = { Icon(tab.icon, contentDescription = tab.label) },
-                            label = { Text(tab.label) },
+    // 全体を Box でラップし、全画面プレイヤーは Scaffold (タブ+ミニプレイヤー) の最前面に重ねる
+    Box(Modifier.fillMaxSize()) {
+        Scaffold(
+            bottomBar = {
+                Column {
+                    // ミニプレイヤー (再生中かつ全画面プレイヤー非表示のみ)
+                    if (!showFullPlayer) {
+                        MiniPlayer(
+                            viewModel = viewModel,
+                            onClick = { showFullPlayer = true },
                         )
                     }
+                    NavigationBar {
+                        BottomTab.entries.forEach { tab ->
+                            NavigationBarItem(
+                                selected = selectedTab == tab,
+                                onClick = { selectedTab = tab },
+                                icon = { Icon(tab.icon, contentDescription = tab.label) },
+                                label = { Text(tab.label) },
+                            )
+                        }
+                    }
+                }
+            },
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            ) {
+                when (selectedTab) {
+                    BottomTab.LIVE -> LiveScreen(viewModel)
+                    BottomTab.PROGRAM_GUIDE -> ProgramGuideScreen(viewModel)
+                    BottomTab.TIMEFREE -> TimefreeScreen(viewModel)
+                    BottomTab.SETTINGS -> SettingsScreen(viewModel)
                 }
             }
-        },
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-        ) {
-            when (selectedTab) {
-                BottomTab.LIVE -> LiveScreen(viewModel)
-                BottomTab.PROGRAM_GUIDE -> ProgramGuideScreen(viewModel)
-                BottomTab.TIMEFREE -> TimefreeScreen(viewModel)
-                BottomTab.SETTINGS -> SettingsScreen(viewModel)
-            }
         }
+
+        // 全画面プレイヤー (再生中のみ、Scaffold 全体を覆う最前面オーバーレイ)
+        if (showFullPlayer) {
+            FullPlayerScreen(
+                viewModel = viewModel,
+                onClose = { showFullPlayer = false },
+            )
+        }
+
+        // Snackbar は最前面に配置する (全画面プレイヤー表示中もエラーが見えるように)
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
     }
 }
