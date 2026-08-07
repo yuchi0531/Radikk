@@ -48,7 +48,7 @@ import java.time.Instant
 
 /**
  * ホーム画面。
- * エリア選択・現在再生中・聞いた履歴・放送中番組・局一覧を縦スクロールで表示する。
+ * エリア選択・現在再生中・放送中番組・局一覧・聞いた履歴を縦スクロールで表示する。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -103,13 +103,6 @@ fun HomeScreen(
                 )
             }
 
-            // 聞いた履歴
-            HistorySection(
-                history = history,
-                onClear = { viewModel.clearHistory() },
-                onEntryClick = { viewModel.playHistoryEntry(it) },
-            )
-
             // 放送中番組 + 局一覧 (局一覧の状態に依存)
             when (val state = stationState) {
                 is AppViewModel.StationUiState.Loading -> {
@@ -158,6 +151,13 @@ fun HomeScreen(
                     }
                 }
             }
+
+            // 聞いた履歴 (最下部)
+            HistorySection(
+                history = history,
+                onClear = { viewModel.clearHistory() },
+                onEntryClick = { viewModel.playHistoryEntry(it) },
+            )
         }
     }
 }
