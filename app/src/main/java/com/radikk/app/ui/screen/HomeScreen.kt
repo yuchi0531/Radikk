@@ -20,6 +20,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,13 +42,15 @@ import java.time.Instant
 
 /**
  * ホーム画面。
- * エリア選択・放送局一覧（現在放送中番組名付き）・お気に入りを縦スクロールで表示する。
+ * エリア選択・放送局一覧（現在放送中番組名付き）・お気に入り（最大5件）を縦スクロールで表示する。
+ * お気に入りが5件を超える場合は「すべて見る」からタイムフリーのお気に入りタブへ遷移できる。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
+    onShowAllFavorites: (() -> Unit)? = null,
 ) {
     val stationState by viewModel.stationState.collectAsState()
     val selectedAreaId by viewModel.selectedAreaId.collectAsState()
@@ -82,13 +85,6 @@ fun HomeScreen(
                 selectedAreaId = selectedAreaId,
                 onAreaSelected = { viewModel.changeArea(it) },
                 modifier = Modifier.padding(bottom = 12.dp),
-            )
-
-            // お気に入り
-            FavoritesSection(
-                favorites = favorites,
-                onEntryClick = { viewModel.playFavorite(it) },
-                onRemove = { viewModel.removeFavorite(it.stationId, it.ftEpochMillis) },
             )
 
             // 局一覧 (局一覧の状態に依存)
@@ -133,6 +129,15 @@ fun HomeScreen(
                     }
                 }
             }
+
+            // お気に入り (最大5件。超過時は「すべて見る」でタイムフリーのお気に入りタブへ)
+            FavoritesSection(
+                favorites = favorites.take(5),
+                totalCount = favorites.size,
+                onEntryClick = { viewModel.playFavorite(it) },
+                onRemove = { viewModel.removeFavorite(it.stationId, it.ftEpochMillis) },
+                onShowAll = onShowAllFavorites,
+            )
         }
     }
 }
@@ -140,12 +145,15 @@ fun HomeScreen(
 /**
  * お気に入りセクション。
  * お気に入り登録したタイムフリー番組の一覧。タップで再生、ハートアイコンで解除。
+ * favorites は呼び出し側で最大5件に制限済み。totalCount が5を超える場合は「すべて見る」を表示する。
  */
 @Composable
 private fun FavoritesSection(
     favorites: List<FavoriteEntry>,
+    totalCount: Int,
     onEntryClick: (FavoriteEntry) -> Unit,
     onRemove: (FavoriteEntry) -> Unit,
+    onShowAll: (() -> Unit)? = null,
 ) {
     Text(
         text = "お気に入り",
@@ -169,6 +177,12 @@ private fun FavoritesSection(
                     onRemove = { onRemove(entry) },
                 )
             }
+        }
+    }
+
+    if (totalCount > 5 && onShowAll != null) {
+        TextButton(onClick = onShowAll) {
+            Text("すべて見る")
         }
     }
 }

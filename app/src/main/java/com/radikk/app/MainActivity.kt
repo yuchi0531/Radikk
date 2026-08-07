@@ -126,6 +126,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppScaffold(viewModel: AppViewModel) {
     var selectedTab by remember { mutableStateOf(BottomTab.HOME) }
+    // ホームの「すべて見る」→ タイムフリーのお気に入りタブを開くためのフラグ
+    var timefreeOpenFavorites by remember { mutableStateOf(false) }
     var showFullPlayer by remember { mutableStateOf(false) }
     val errorMessage by viewModel.errorMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -196,9 +198,20 @@ private fun AppScaffold(viewModel: AppViewModel) {
                     .padding(innerPadding),
             ) {
                 when (selectedTab) {
-                    BottomTab.HOME -> HomeScreen(viewModel)
+                    BottomTab.HOME -> HomeScreen(
+                        viewModel = viewModel,
+                        onShowAllFavorites = {
+                            // タイムフリーのお気に入りタブを開く
+                            timefreeOpenFavorites = true
+                            selectedTab = BottomTab.TIMEFREE
+                        },
+                    )
                     BottomTab.PROGRAM_GUIDE -> ProgramGuideScreen(viewModel)
-                    BottomTab.TIMEFREE -> TimefreeScreen(viewModel)
+                    BottomTab.TIMEFREE -> TimefreeScreen(
+                        viewModel = viewModel,
+                        openFavorites = timefreeOpenFavorites,
+                        onFavoritesOpened = { timefreeOpenFavorites = false },
+                    )
                     BottomTab.SETTINGS -> SettingsScreen(viewModel)
                 }
             }

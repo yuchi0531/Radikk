@@ -69,6 +69,8 @@ import java.time.Instant
 fun TimefreeScreen(
     viewModel: AppViewModel,
     modifier: Modifier = Modifier,
+    openFavorites: Boolean = false,
+    onFavoritesOpened: () -> Unit = {},
 ) {
     val stationState by viewModel.stationState.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
@@ -85,6 +87,15 @@ fun TimefreeScreen(
 
     // 検索 / 局から選ぶ / お気に入り モード
     var mode by remember { mutableStateOf(TimefreeMode.SEARCH) }
+
+    // ホームの「すべて見る」→ お気に入りタブを開く (フラグ消費後にリセット)
+    LaunchedEffect(openFavorites) {
+        if (openFavorites) {
+            mode = TimefreeMode.FAVORITES
+            selectedStation = null
+            onFavoritesOpened()
+        }
+    }
 
     // 検索状態
     var searchQuery by remember { mutableStateOf("") }
