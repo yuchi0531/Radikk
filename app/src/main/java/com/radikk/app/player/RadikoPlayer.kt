@@ -258,15 +258,6 @@ class RadikoPlayer(
         _player.setAudioAttributes(attrs, /* handleAudioFocus = */ true)
     }
 
-    /** バックグラウンド再生 OFF 時: オーディオフォーカスを外す */
-    fun setHandleAudioFocus(handle: Boolean) {
-        val attrs = AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-            .build()
-        _player.setAudioAttributes(attrs, handle)
-    }
-
     /** 表示用の duration を安全に計算する (C.TIME_UNSET など無効値は 0 に丸める)。 */
     private fun effectiveDuration(): Long {
         durationOverrideMs?.let { if (it > 0) return it }

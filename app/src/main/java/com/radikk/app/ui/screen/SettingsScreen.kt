@@ -40,7 +40,7 @@ import java.time.Instant
 
 /**
  * 設定画面。
- * エリア選択 / テーマ / バックグラウンド再生 / 認証キャッシュ削除 / バージョン表示。
+ * エリア選択 / テーマ / 認証キャッシュ削除 / バージョン表示。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -116,20 +116,6 @@ fun SettingsScreen(
                 title = "ダイナミックカラー",
                 checked = settings.dynamicColor,
                 onCheckedChange = { viewModel.setDynamicColor(it) },
-            )
-
-            HorizontalDivider()
-
-            // バックグラウンド再生
-            Text(
-                text = "再生",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
-            )
-            SwitchRow(
-                title = "バックグラウンド再生",
-                checked = settings.backgroundPlayback,
-                onCheckedChange = { viewModel.setBackgroundPlayback(it) },
             )
 
             HorizontalDivider()

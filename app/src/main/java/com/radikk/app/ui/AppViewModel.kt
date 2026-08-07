@@ -128,8 +128,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val prevArea = _selectedAreaId.value
                 _settings.value = s
                 _selectedAreaId.value = s.areaId
-                // バックグラウンド再生設定の反映 (AudioFocus 制御)
-                applyBackgroundPlayback(s.backgroundPlayback)
                 // エリア変更時のみ再認証 (初回ロード含む)。設定コレクターと changeArea の並走は
                 // AuthRepository の Mutex シングルフライトで吸収される
                 if (s.areaId.isNotEmpty() && (prevArea != s.areaId || _authState.value is AuthUiState.Loading)) {
@@ -235,25 +233,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return programsByStation
     }
 
-    /**
-     * バックグラウンド再生設定を反映する。
-     *
-     * Media3 の MediaSession は再生中に自動で通知 + フォアグラウンドサービスを維持するため、
-     * ここでは明示的に startForegroundService を呼ばない (呼ぶと
-     * ForegroundServiceDidNotStartInTimeException でクラッシュする)。
-     *
-     * - ON: メディア通知が再生中に表示され、バックグラウンドでも継続する
-     * - OFF: メディア通知を非表示にし、オーディオフォーカスを要求しない
-     *        (アプリがバックグラウンドに移ると再生が止まる)
-     */
-    private fun applyBackgroundPlayback(enabled: Boolean) {
-        // メディア通知 (MediaSession) の表示/非表示を制御する。
-        // Media3 の MediaSession はデフォルトで再生中に通知を出す。
-        // バックグラウンド再生 OFF 時は、通知を隠すために playbackState を
-        // 監視して停止させる。ここでは AudioFocus 制御のみ行う。
-        radikoPlayer.setHandleAudioFocus(!enabled)
-    }
-
     private suspend fun refreshAuthIfNeeded(areaId: String) {
         _authState.value = AuthUiState.Loading
         _errorMessage.value = null
@@ -300,9 +279,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // ライブは URL ベースシーク対象外 (タイムフリーのみ)
             timefreeContext = null
             try {
-                // バックグラウンド再生設定に応じて FGS を起動/停止
-                applyBackgroundPlayback(_settings.value.backgroundPlayback)
-
                 val session = auth.getSession(_selectedAreaId.value)
                 radikoPlayer.setAuth(session.token, session.areaId)
 
@@ -392,9 +368,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _errorMessage.value = null
             try {
-                // バックグラウンド再生設定に応じて FGS を起動/停止
-                applyBackgroundPlayback(_settings.value.backgroundPlayback)
-
                 val session = auth.getSession(_selectedAreaId.value)
                 radikoPlayer.setAuth(session.token, session.areaId)
                 // シーク時のプレイリスト再構築用に現在のタイムフリー再生コンテキストを保持する
@@ -645,8 +618,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _errorMessage.value = null
             try {
-                applyBackgroundPlayback(_settings.value.backgroundPlayback)
-
                 val session = auth.getSession(_selectedAreaId.value)
                 radikoPlayer.setAuth(session.token, session.areaId)
                 // シーク時のプレイリスト再構築用に現在のタイムフリー再生コンテキストを保持する
@@ -723,8 +694,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _errorMessage.value = null
             try {
-                applyBackgroundPlayback(_settings.value.backgroundPlayback)
-
                 val session = auth.getSession(_selectedAreaId.value)
                 radikoPlayer.setAuth(session.token, session.areaId)
                 // シーク時のプレイリスト再構築用に現在のタイムフリー再生コンテキストを保持する
@@ -826,10 +795,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setDynamicColor(enabled: Boolean) {
         viewModelScope.launch { settings.setDynamicColor(enabled) }
-    }
-
-    fun setBackgroundPlayback(enabled: Boolean) {
-        viewModelScope.launch { settings.setBackgroundPlayback(enabled) }
     }
 
     /** 認証キャッシュ削除 */
