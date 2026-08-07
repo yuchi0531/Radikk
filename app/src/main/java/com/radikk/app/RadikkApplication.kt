@@ -5,7 +5,7 @@ import com.radikk.app.data.api.FullKeyProvider
 import com.radikk.app.data.api.RadikoApiClient
 import com.radikk.app.data.auth.AuthRepository
 import com.radikk.app.data.datastore.SettingsRepository
-import com.radikk.app.data.history.HistoryRepository
+import com.radikk.app.data.favorite.FavoriteRepository
 import com.radikk.app.data.programcache.ProgramCacheRepository
 import com.radikk.app.data.reminder.ReminderRepository
 import com.radikk.app.data.repository.ProgramRepository
@@ -34,7 +34,7 @@ class RadikkApplication : Application() {
         private set
     lateinit var programCacheRepository: ProgramCacheRepository
         private set
-    lateinit var historyRepository: HistoryRepository
+    lateinit var favoriteRepository: FavoriteRepository
         private set
 
     override fun onCreate() {
@@ -55,6 +55,6 @@ class RadikkApplication : Application() {
         reminderRepository = ReminderRepository(this)
         timefreeCacheRepository = TimefreeCacheRepository(this)
         programCacheRepository = ProgramCacheRepository(this)
-        historyRepository = HistoryRepository(this)
+        favoriteRepository = FavoriteRepository(this)
     }
 }

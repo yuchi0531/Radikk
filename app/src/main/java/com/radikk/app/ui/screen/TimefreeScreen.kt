@@ -14,12 +14,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
@@ -39,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.radikk.app.data.favorite.FavoriteEntry
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
 import com.radikk.app.data.timefree.CachedTimefreeProgram
@@ -54,6 +58,7 @@ import java.time.Instant
  *
  * - 検索バー: キャッシュ済み番組を番組名/パーソナリティ/局名で検索
  * - 局選択: 過去7日分の番組リスト (取得時にキャッシュへ保存)
+ * - お気に入り: 登録した番組一覧 (タップで再生、ハートで解除)
  * - タップで再生 (シーク可能)
  *
  * キャッシュは DataStore に永続化され、タイムフリー期間外 (過去7日より前) の
@@ -66,6 +71,7 @@ fun TimefreeScreen(
     modifier: Modifier = Modifier,
 ) {
     val stationState by viewModel.stationState.collectAsState()
+    val favorites by viewModel.favorites.collectAsState()
     var selectedStation by remember { mutableStateOf<Station?>(null) }
     var selectedDayOffset by remember { mutableStateOf(0) }
     var programs by remember { mutableStateOf<List<Program>>(emptyList()) }
@@ -77,7 +83,7 @@ fun TimefreeScreen(
         selectedStation = null
     }
 
-    // 検索 / 局から選ぶ モード
+    // 検索 / 局から選ぶ / お気に入り モード
     var mode by remember { mutableStateOf(TimefreeMode.SEARCH) }
 
     // 検索状態
@@ -150,8 +156,8 @@ fun TimefreeScreen(
                 is AppViewModel.StationUiState.Success -> {
                     if (selectedStation == null) {
                         Column(Modifier.fillMaxSize()) {
-                            // 検索 / 局から選ぶ モード切り替えタブ
-                            PrimaryTabRow(selectedTabIndex = if (mode == TimefreeMode.SEARCH) 0 else 1) {
+                            // 検索 / 局から選ぶ / お気に入り モード切り替えタブ
+                            PrimaryTabRow(selectedTabIndex = mode.ordinal) {
                                 Tab(
                                     selected = mode == TimefreeMode.SEARCH,
                                     onClick = { mode = TimefreeMode.SEARCH },
@@ -161,6 +167,11 @@ fun TimefreeScreen(
                                     selected = mode == TimefreeMode.STATIONS,
                                     onClick = { mode = TimefreeMode.STATIONS },
                                     text = { Text("局から選ぶ") },
+                                )
+                                Tab(
+                                    selected = mode == TimefreeMode.FAVORITES,
+                                    onClick = { mode = TimefreeMode.FAVORITES },
+                                    text = { Text("お気に入り") },
                                 )
                             }
 
@@ -250,6 +261,37 @@ fun TimefreeScreen(
                                         }
                                     }
                                 }
+                                TimefreeMode.FAVORITES -> {
+                                    // お気に入り一覧
+                                    if (favorites.isEmpty()) {
+                                        Box(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .padding(32.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text(
+                                                "お気に入りはまだありません",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    } else {
+                                        LazyColumn(
+                                            contentPadding = PaddingValues(16.dp),
+                                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                                        ) {
+                                            items(favorites, key = { it.stationId + "|" + it.ftEpochMillis }) { entry ->
+                                                FavoriteEntryRow(
+                                                    entry = entry,
+                                                    onClick = { viewModel.playFavorite(entry) },
+                                                    onRemove = {
+                                                        viewModel.removeFavorite(entry.stationId, entry.ftEpochMillis)
+                                                    },
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -332,7 +374,9 @@ fun TimefreeScreen(
                                         items(programs, key = { it.ft.toEpochMilli() }) { program ->
                                             TimefreeProgramRow(
                                                 program = program,
+                                                isFavorite = viewModel.isFavorite(station.id, program.ft.toEpochMilli()),
                                                 onClick = { viewModel.playTimefree(station, program) },
+                                                onToggleFavorite = { viewModel.toggleFavorite(station, program) },
                                             )
                                         }
                                     }
@@ -397,57 +441,118 @@ private fun SearchResultRow(
 }
 
 /**
- * タイムフリー再生可能な番組の行。
+ * タイムフリー再生可能な番組の行。右端にハート (お気に入りトグル) 付き。
  */
 @Composable
 private fun TimefreeProgramRow(
     program: Program,
+    isFavorite: Boolean,
     onClick: () -> Unit,
+    onToggleFavorite: () -> Unit,
 ) {
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = "${RadikoTimeUtil.formatTime(program.ft)} - ${RadikoTimeUtil.formatTime(program.to)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (program.isOnAir()) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(
-                    text = "放送中",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    text = "${RadikoTimeUtil.formatTime(program.ft)} - ${RadikoTimeUtil.formatTime(program.to)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (program.isOnAir()) {
+                    Text(
+                        text = "放送中",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            Text(
+                text = program.title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // "null" 文字列は API の null 相当なので表示しない
+            if (!program.performer.isNullOrBlank() && program.performer != "null") {
+                Text(
+                    text = program.performer,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
-        Text(
-            text = program.title,
-            style = MaterialTheme.typography.bodyLarge,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-        // "null" 文字列は API の null 相当なので表示しない
-        if (!program.performer.isNullOrBlank() && program.performer != "null") {
+        IconButton(onClick = onToggleFavorite) {
+            Icon(
+                imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                contentDescription = if (isFavorite) "お気に入り解除" else "お気に入り登録",
+                tint = if (isFavorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+    HorizontalDivider()
+}
+
+/**
+ * お気に入りエントリの行。タップで再生、ハートで解除。
+ */
+@Composable
+private fun FavoriteEntryRow(
+    entry: FavoriteEntry,
+    onClick: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = entry.stationName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = "${RadikoTimeUtil.formatDate(Instant.ofEpochMilli(entry.ftEpochMillis))} " +
+                        "${RadikoTimeUtil.formatTime(Instant.ofEpochMilli(entry.ftEpochMillis))}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
-                text = program.performer,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
+                text = entry.programTitle,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        HorizontalDivider(
-            modifier = Modifier.padding(top = 8.dp),
-        )
+        IconButton(onClick = onRemove) {
+            Icon(
+                imageVector = Icons.Filled.Favorite,
+                contentDescription = "お気に入り解除",
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
     }
+    HorizontalDivider()
 }
 
 /** タイムフリー画面のモード。 */
-private enum class TimefreeMode { SEARCH, STATIONS }
+private enum class TimefreeMode { SEARCH, STATIONS, FAVORITES }

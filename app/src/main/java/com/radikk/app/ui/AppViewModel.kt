@@ -6,8 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.radikk.app.RadikkApplication
 import com.radikk.app.data.datastore.AppSettings
 import com.radikk.app.data.datastore.ThemeMode
-import com.radikk.app.data.history.HistoryEntry
-import com.radikk.app.data.history.HistoryRepository
+import com.radikk.app.data.favorite.FavoriteEntry
 import com.radikk.app.data.model.AuthSession
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
@@ -16,7 +15,6 @@ import com.radikk.app.data.reminder.ReminderRepository
 import com.radikk.app.data.reminder.ReminderScheduler
 import com.radikk.app.data.reminder.StoredReminder
 import com.radikk.app.data.timefree.CachedTimefreeProgram
-import com.radikk.app.data.timefree.TimefreeCacheRepository
 import com.radikk.app.player.PlaybackService
 import com.radikk.app.player.RadikoPlayer
 import com.radikk.app.player.StreamUrlResolver
@@ -47,7 +45,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val reminderRepo = app.reminderRepository
     private val timefreeCache = app.timefreeCacheRepository
     private val programCache = app.programCacheRepository
-    private val historyRepo = app.historyRepository
+    private val favoriteRepo = app.favoriteRepository
 
     val radikoPlayer = RadikoPlayer(application)
 
@@ -116,8 +114,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _reminders = MutableStateFlow<List<StoredReminder>>(emptyList())
     val reminders: StateFlow<List<StoredReminder>> = _reminders.asStateFlow()
 
-    // --- 聞いた番組の履歴 ---
-    val history: StateFlow<List<HistoryEntry>> = historyRepo.history.stateIn(
+    // --- お気に入り番組 ---
+    val favorites: StateFlow<List<FavoriteEntry>> = favoriteRepo.favorites.stateIn(
         viewModelScope, SharingStarted.Eagerly, emptyList()
     )
 
@@ -321,13 +319,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     isTimefree = false,
                     stationLogoUrl = station.logoUrl,
                 )
-                historyRepo.add(HistoryEntry(
-                    stationId = station.id,
-                    stationName = station.name,
-                    programTitle = titleUsed ?: station.name,
-                    isTimefree = false,
-                    listenedAtEpochMillis = Instant.now().toEpochMilli(),
-                ))
                 startLiveTitleRefresher(station)
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "ライブ再生を開始できませんでした"
@@ -429,13 +420,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     description = program.description,
                     performer = program.performer,
                 )
-                historyRepo.add(HistoryEntry(
-                    stationId = station.id,
-                    stationName = station.name,
-                    programTitle = program.title,
-                    isTimefree = true,
-                    listenedAtEpochMillis = Instant.now().toEpochMilli(),
-                ))
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "タイムフリー再生を開始できませんでした"
             }
@@ -699,6 +683,88 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // --- お気に入り番組 ---
+
+    /** 指定番組がお気に入り登録済みか (StateFlow から同期的に読む)。 */
+    fun isFavorite(stationId: String, ftEpochMillis: Long): Boolean =
+        favorites.value.any { it.stationId == stationId && it.ftEpochMillis == ftEpochMillis }
+
+    /** お気に入り登録/解除を切り替える。 */
+    fun toggleFavorite(station: Station, program: Program) {
+        val ft = program.ft.toEpochMilli()
+        if (isFavorite(station.id, ft)) {
+            removeFavorite(station.id, ft)
+        } else {
+            addFavorite(
+                FavoriteEntry(
+                    stationId = station.id,
+                    stationName = station.name,
+                    programTitle = program.title,
+                    ftEpochMillis = ft,
+                    toEpochMillis = program.to.toEpochMilli(),
+                    addedAtEpochMillis = Instant.now().toEpochMilli(),
+                )
+            )
+        }
+    }
+
+    /** お気に入りに追加する。 */
+    fun addFavorite(entry: FavoriteEntry) {
+        viewModelScope.launch { favoriteRepo.add(entry) }
+    }
+
+    /** お気に入りから削除する。 */
+    fun removeFavorite(stationId: String, ftEpochMillis: Long) {
+        viewModelScope.launch { favoriteRepo.remove(stationId, ftEpochMillis) }
+    }
+
+    /** お気に入りエントリを再生する (タイムフリー再生と同等)。 */
+    fun playFavorite(entry: FavoriteEntry) {
+        viewModelScope.launch {
+            _errorMessage.value = null
+            try {
+                applyBackgroundPlayback(_settings.value.backgroundPlayback)
+
+                val session = auth.getSession(_selectedAreaId.value)
+                radikoPlayer.setAuth(session.token, session.areaId)
+                // シーク時のプレイリスト再構築用に現在のタイムフリー再生コンテキストを保持する
+                timefreeContext = TimefreeSeekContext(
+                    station = Station(
+                        id = entry.stationId,
+                        name = entry.stationName,
+                        asciiName = "",
+                        areafree = false,
+                        timefree = true,
+                        areaIds = emptyList(),
+                        logoUrl = null,
+                    ),
+                    ft = Instant.ofEpochMilli(entry.ftEpochMillis),
+                    to = Instant.ofEpochMilli(entry.toEpochMillis),
+                    token = session.token,
+                )
+
+                val resolver = StreamUrlResolver(app.apiClient)
+                val medialistUrl = resolver.resolveTimefreeMedialistUrl(
+                    stationId = entry.stationId,
+                    token = session.token,
+                    from = Instant.ofEpochMilli(entry.ftEpochMillis),
+                    to = Instant.ofEpochMilli(entry.toEpochMillis),
+                )
+                val durationMs = (entry.toEpochMillis - entry.ftEpochMillis).coerceAtLeast(0L)
+                radikoPlayer.playMedialist(medialistUrl, durationOverrideMs = durationMs)
+
+                _nowPlaying.value = NowPlaying(
+                    stationId = entry.stationId,
+                    stationName = entry.stationName,
+                    title = entry.programTitle,
+                    isTimefree = true,
+                )
+            } catch (e: Exception) {
+                _errorMessage.value = e.message ?: "お気に入り番組を再生できませんでした"
+            }
+        }
+    }
+
     /** 再生エラーを UI に反映する。 */
     fun consumePlayerError(): String? {
         val err = playerUiState.value.error
@@ -764,32 +830,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setBackgroundPlayback(enabled: Boolean) {
         viewModelScope.launch { settings.setBackgroundPlayback(enabled) }
-    }
-
-    /** 聞いた番組の履歴を全削除する。 */
-    fun clearHistory() {
-        viewModelScope.launch { historyRepo.clear() }
-    }
-
-    /** 履歴エントリから再生する。タイムフリー期間内ならタイムフリー再生を試みる。 */
-    fun playHistoryEntry(entry: HistoryEntry) {
-        viewModelScope.launch {
-            val all = stationRepo.getStations()
-            val station = all.firstOrNull { it.id == entry.stationId }
-            if (station == null) {
-                _errorMessage.value = "局が見つかりません: ${entry.stationName}"
-                return@launch
-            }
-            // タイムフリー期間内 (7日) ならタイムフリー再生、それ以外はライブを試す
-            val now = Instant.now().toEpochMilli()
-            if (now - entry.listenedAtEpochMillis <= TimefreeCacheRepository.MAX_AGE_MILLIS) {
-                // 履歴の番組 (放送時刻不明) は現在時刻基準でライブ再生を優先し、
-                // 失敗時はタイムフリー一覧から該当番組を探して再生する
-                playLive(station)
-            } else {
-                _errorMessage.value = "この番組はタイムフリー期間を過ぎています"
-            }
-        }
     }
 
     /** 認証キャッシュ削除 */

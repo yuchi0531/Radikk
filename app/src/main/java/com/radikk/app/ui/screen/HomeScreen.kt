@@ -5,17 +5,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.Card
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -24,26 +20,28 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.radikk.app.data.history.HistoryEntry
-import com.radikk.app.data.model.Station
-import com.radikk.app.data.timefree.TimefreeCacheRepository
+import com.radikk.app.data.favorite.FavoriteEntry
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.AreaSelector
 import com.radikk.app.ui.component.StationCard
+import com.radikk.app.util.RadikoTimeUtil
 import java.time.Instant
 
 /**
  * ホーム画面。
- * エリア選択・現在再生中・放送局・聞いた履歴を縦スクロールで表示する。
+ * エリア選択・放送局一覧（現在放送中番組名付き）・お気に入りを縦スクロールで表示する。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,11 +51,20 @@ fun HomeScreen(
 ) {
     val stationState by viewModel.stationState.collectAsState()
     val selectedAreaId by viewModel.selectedAreaId.collectAsState()
-    val nowPlaying by viewModel.nowPlaying.collectAsState()
-    val playerState by viewModel.playerUiState.collectAsState()
-    val history by viewModel.history.collectAsState()
+    val favorites by viewModel.favorites.collectAsState()
 
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
+
+    // エリア内全局の今日分番組表から on-air の番組名だけを抽出する
+    // (放送局一覧の「放送中: 〇〇」表示に使う)
+    var onAirTitles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    LaunchedEffect(stations.map { it.id }.joinToString(",")) {
+        if (stations.isEmpty()) return@LaunchedEffect
+        val map = viewModel.getProgramsForStations(stations, 0)
+        onAirTitles = map.entries.flatMap { (sid, progs) ->
+            progs.filter { it.isOnAir() }.map { sid to it.title }
+        }.toMap()
+    }
 
     Scaffold(
         modifier = modifier,
@@ -77,16 +84,12 @@ fun HomeScreen(
                 modifier = Modifier.padding(bottom = 12.dp),
             )
 
-            // 現在再生中カード (再生中のみ)
-            nowPlaying?.let { np ->
-                NowPlayingCard(
-                    nowPlaying = np,
-                    isPlaying = playerState.isPlaying,
-                    onPlayPause = { if (playerState.isPlaying) viewModel.pause() else viewModel.play() },
-                    onStop = { viewModel.stop() },
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-            }
+            // お気に入り
+            FavoritesSection(
+                favorites = favorites,
+                onEntryClick = { viewModel.playFavorite(it) },
+                onRemove = { viewModel.removeFavorite(it.stationId, it.ftEpochMillis) },
+            )
 
             // 局一覧 (局一覧の状態に依存)
             when (val state = stationState) {
@@ -115,136 +118,55 @@ fun HomeScreen(
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(top = 16.dp),
                     )
-                    // 2列グリッド (縦スクロール Column 内のため LazyVerticalGrid は使わず
-                    // chunked で行に分割する)
-                    val chunked = stations.chunked(2)
+                    // 1列表示 (横一列 = 1カード)
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        chunked.forEach { rowStations ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                rowStations.forEach { station ->
-                                    StationCard(
-                                        station = station,
-                                        onClick = { viewModel.playLive(station) },
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                }
-                                // 奇数個のとき右側を空ける
-                                if (rowStations.size == 1) Spacer(Modifier.weight(1f))
-                            }
+                        stations.forEach { station ->
+                            StationCard(
+                                station = station,
+                                onClick = { viewModel.playLive(station) },
+                                nowPlayingTitle = onAirTitles[station.id],
+                            )
                         }
                     }
                 }
             }
-
-            // 聞いた履歴 (最下部)
-            HistorySection(
-                history = history,
-                onClear = { viewModel.clearHistory() },
-                onEntryClick = { viewModel.playHistoryEntry(it) },
-            )
         }
     }
 }
 
 /**
- * 現在再生中の番組カード。再生/一時停止・停止ボタン付き。
+ * お気に入りセクション。
+ * お気に入り登録したタイムフリー番組の一覧。タップで再生、ハートアイコンで解除。
  */
 @Composable
-private fun NowPlayingCard(
-    nowPlaying: AppViewModel.NowPlaying,
-    isPlaying: Boolean,
-    onPlayPause: () -> Unit,
-    onStop: () -> Unit,
-    modifier: Modifier = Modifier,
+private fun FavoritesSection(
+    favorites: List<FavoriteEntry>,
+    onEntryClick: (FavoriteEntry) -> Unit,
+    onRemove: (FavoriteEntry) -> Unit,
 ) {
-    Card(modifier = modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = nowPlaying.stationName,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = nowPlaying.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            IconButton(onClick = onPlayPause) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (isPlaying) "一時停止" else "再生",
-                )
-            }
-            IconButton(onClick = onStop) {
-                Icon(
-                    imageVector = Icons.Filled.Stop,
-                    contentDescription = "停止",
-                )
-            }
-        }
-    }
-}
+    Text(
+        text = "お気に入り",
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(top = 16.dp),
+    )
 
-/**
- * 聞いた履歴セクション。
- * タイムフリー期間 (7日) を過ぎた行はグレー表示でタップ不可。
- */
-@Composable
-private fun HistorySection(
-    history: List<HistoryEntry>,
-    onClear: () -> Unit,
-    onEntryClick: (HistoryEntry) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    if (favorites.isEmpty()) {
         Text(
-            text = "聞いた履歴",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.weight(1f),
-        )
-        if (history.isNotEmpty()) {
-            TextButton(onClick = onClear) {
-                Text("クリア")
-            }
-        }
-    }
-
-    if (history.isEmpty()) {
-        Text(
-            text = "再生した番組がここに表示されます",
+            text = "お気に入りはまだありません",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 8.dp),
         )
     } else {
         Column(modifier = Modifier.fillMaxWidth()) {
-            history.forEach { entry ->
-                HistoryRow(
+            favorites.forEach { entry ->
+                FavoriteRow(
                     entry = entry,
-                    expired = Instant.now().toEpochMilli() - entry.listenedAtEpochMillis >
-                        TimefreeCacheRepository.MAX_AGE_MILLIS,
                     onClick = { onEntryClick(entry) },
+                    onRemove = { onRemove(entry) },
                 )
             }
         }
@@ -252,65 +174,55 @@ private fun HistorySection(
 }
 
 /**
- * 履歴の1行。期限切れ (7日超過) はグレー表示でタップ不可。
+ * お気に入りの1行。番組タイトル・局名・放送日時を表示し、タップで再生。
+ * 右端のハートアイコンでお気に入り解除。
  */
 @Composable
-private fun HistoryRow(
-    entry: HistoryEntry,
-    expired: Boolean,
+private fun FavoriteRow(
+    entry: FavoriteEntry,
     onClick: () -> Unit,
+    onRemove: () -> Unit,
 ) {
-    val primary = MaterialTheme.colorScheme.primary
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
-    val dim = onSurfaceVariant.copy(alpha = 0.5f)
-
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .let { if (expired) it else it.clickable(onClick = onClick) }
+            .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = entry.stationName,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (expired) dim else primary,
+                text = entry.programTitle,
+                style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
             )
-            Text(
-                text = relativeTime(entry.listenedAtEpochMillis),
-                style = MaterialTheme.typography.labelSmall,
-                color = if (expired) dim else onSurfaceVariant,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = entry.stationName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = "${RadikoTimeUtil.formatDate(Instant.ofEpochMilli(entry.ftEpochMillis))} " +
+                        "${RadikoTimeUtil.formatTime(Instant.ofEpochMilli(entry.ftEpochMillis))}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        IconButton(onClick = onRemove) {
+            Icon(
+                imageVector = Icons.Filled.Favorite,
+                contentDescription = "お気に入り解除",
+                tint = MaterialTheme.colorScheme.primary,
             )
         }
-        Text(
-            text = entry.programTitle,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (expired) dim else onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
     }
-}
-
-/**
- * 履歴の経過時間を「◯分前 / ◯時間前 / ◯日前」で返す。
- */
-private fun relativeTime(listenedAtEpochMillis: Long): String {
-    val diff = Instant.now().toEpochMilli() - listenedAtEpochMillis
-    val minutes = diff / 60_000
-    return when {
-        diff < 60_000 -> "たった今"
-        minutes < 60 -> "${minutes}分前"
-        minutes < 24 * 60 -> "${minutes / 60}時間前"
-        else -> "${minutes / (24 * 60)}日前"
-    }
+    HorizontalDivider()
 }
