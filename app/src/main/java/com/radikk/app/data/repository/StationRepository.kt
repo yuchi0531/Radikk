@@ -17,6 +17,21 @@ class StationRepository(private val apiClient: RadikoApiClient) {
 
     companion object {
         private const val CACHE_TTL_MS = 60L * 60 * 1000 // 1時間
+
+        /**
+         * NHK FM (JOAK-FM)。
+         * radiko の局一覧 API (region/full.xml) には含まれないため、
+         * 全国放送局として固定定義する。全国放送 (areafree) のため全エリアで聴ける。
+         */
+        val NHK_FM = Station(
+            id = "JOAK-FM",
+            name = "NHK FM（東京）",
+            asciiName = "JOAK-FM",
+            areafree = true,
+            timefree = true,
+            areaIds = emptyList(), // 全国放送: 特定エリアに属さない
+            logoUrl = "https://radiko.jp/v2/static/station/logo/JOAK-FM/224x100.png",
+        )
     }
 
     private val cacheMutex = Mutex()
@@ -25,6 +40,7 @@ class StationRepository(private val apiClient: RadikoApiClient) {
 
     /**
      * 全放送局を取得する (1時間キャッシュ)。
+     * 一覧 API に含まれない NHK FM を常に追加する。
      * @throws Exception ネットワーク・パースエラー
      */
     suspend fun getStations(forceRefresh: Boolean = false): List<Station> = cacheMutex.withLock {
@@ -37,7 +53,9 @@ class StationRepository(private val apiClient: RadikoApiClient) {
         }
 
         val xml = apiClient.getString(RadikoApi.STATION_REGION_URL)
-        val stations = parseStationXml(xml)
+        val parsed = parseStationXml(xml)
+        // NHK FM を追加 (重複回避)
+        val stations = if (parsed.any { it.id == NHK_FM.id }) parsed else parsed + NHK_FM
         cachedStations = stations
         cachedAt = Instant.now()
         stations
@@ -94,14 +112,23 @@ class StationRepository(private val apiClient: RadikoApiClient) {
      * 指定エリアで聴ける局のみにフィルタする。
      * 選択エリアに所属する局 (areaIds に含まれる) のみを返す。
      * それ以外の局 (他エリアの局、全国放送局) は表示しない。
+     *
+     * 例外として NHK FM (JOAK-FM) は全国放送のため全エリアに表示する。
      */
     fun filterByArea(stations: List<Station>, areaId: String): List<Station> {
         val local = stations.filter { it.areaIds.contains(areaId) }
+        // NHK FM (全国放送) を全エリアに含める
+        val nhkFm = stations.firstOrNull { it.id == NHK_FM.id }
+        val result = if (nhkFm != null && local.none { it.id == nhkFm.id }) {
+            local + nhkFm
+        } else {
+            local
+        }
         android.util.Log.d(
             "StationRepository",
             "filterByArea(areaId=$areaId): local=${local.size}, " +
                 "localFirst=${local.take(5).map { it.id }}"
         )
-        return local
+        return result
     }
 }

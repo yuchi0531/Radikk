@@ -127,4 +127,48 @@ class StreamUrlResolverTest {
             url
         )
     }
+
+    @Test
+    fun `NHK 形式の XML で dr-wowza が優先される`() {
+        // NHK の station XML: areafree=1 は si-c のみ (504 を返す)、
+        // areafree=0 に dr-wowza (正常配信) がある。
+        // ライブ候補は areafree を無視して timefree=0 を全て収集し、dr-wowza を優先する。
+        val nhkXml = """
+            <?xml version="1.0" encoding="UTF-8" ?>
+            <urls>
+              <url areafree="0" max_delay="60" timefree="0">
+                <playlist_create_url>https://dr-wowza.radiko-cf.com/so/playlist.m3u8</playlist_create_url>
+              </url>
+              <url areafree="0" max_delay="60" timefree="0">
+                <playlist_create_url>https://si-f-radiko.smartstream.ne.jp/so/playlist.m3u8</playlist_create_url>
+              </url>
+              <url areafree="1" max_delay="60" timefree="0">
+                <playlist_create_url>https://si-c-radiko.smartstream.ne.jp/so/playlist.m3u8</playlist_create_url>
+              </url>
+              <url areafree="1" max_delay="60" timefree="1">
+                <playlist_create_url>https://tf-c-rpaa-radiko.smartstream.ne.jp/tf/playlist.m3u8</playlist_create_url>
+              </url>
+            </urls>
+        """.trimIndent()
+        // ライブ候補: areafree 無視で timefree=0 を収集
+        // 優先順位: areafree=1 (si-c) → areafree=0 内で dr-wowza → si-f
+        val urls = resolver.extractPlaylistUrls(nhkXml, areafree = null, timefree = false)
+        assertEquals("https://si-c-radiko.smartstream.ne.jp/so/playlist.m3u8", urls.first())
+        // dr-wowza は areafree=0 のフォールバック候補として含まれる
+        assertTrue(urls.contains("https://dr-wowza.radiko-cf.com/so/playlist.m3u8"))
+        assertTrue(urls.size == 3)
+    }
+
+    @Test
+    fun `dr-wowza がない場合は smartstream を使う`() {
+        val xml = """
+            <urls>
+              <url areafree="1" max_delay="60" timefree="0">
+                <playlist_create_url>https://si-c-radiko.smartstream.ne.jp/so/playlist.m3u8</playlist_create_url>
+              </url>
+            </urls>
+        """.trimIndent()
+        assertEquals("https://si-c-radiko.smartstream.ne.jp/so/playlist.m3u8",
+            resolver.extractPlaylistUrl(xml, areafree = true, timefree = false))
+    }
 }

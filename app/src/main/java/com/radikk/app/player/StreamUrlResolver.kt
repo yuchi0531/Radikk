@@ -72,12 +72,17 @@ class StreamUrlResolver(
     }
 
     /**
-     * station stream XML からライブ用 playlist_create_url を取得する。
-     * areafree="1" かつ timefree="0" の URL を選択。
+     * station stream XML からライブ用 playlist_create_url の候補リストを取得する。
+     * ライブ用 (timefree="0") の URL を全て返す (優先順位付き)。
+     *
+     * 通常の局は areafree="1" (地域フリー) の URL を使う。しかし NHK などの局では
+     * areafree="1" の smartstream 系 (si-c) が HTTP 504 を返し、areafree="0" の
+     * dr-wowza のみ正常に配信される。そのため areafree に関わらず timefree="0" の
+     * 候補を列挙し、dr-wowza を優先して呼び出し側で順に試行 (フォールバック) する。
      */
-    suspend fun getLivePlaylistUrl(stationId: String): String {
+    suspend fun getLivePlaylistUrls(stationId: String): List<String> {
         val xml = apiClient.getString(RadikoApi.STATION_STREAM_URL + stationId + ".xml")
-        return extractPlaylistUrl(xml, areafree = true, timefree = false)
+        return extractPlaylistUrls(xml, areafree = null, timefree = false)
     }
 
     /**
@@ -95,25 +100,56 @@ class StreamUrlResolver(
      * 属性の順序に依存しない (areafree/timefree を個別に検索)。
      */
     internal fun extractPlaylistUrl(xml: String, areafree: Boolean, timefree: Boolean): String {
+        return extractPlaylistUrls(xml, areafree, timefree).firstOrNull()
+            ?: throw IOException("station XML から playlist_create_url を見つけられませんでした (areafree=$areafree, timefree=$timefree)")
+    }
+
+    /**
+     * station stream XML をパースして playlist_create_url の候補リストを抽出する。
+     * @param areafree null の場合は areafree 属性を無視して全ての候補を返す (ライブのフォールバック用)。
+     * dr-wowza を優先する (NHK 等で smartstream が 504 を返す問題の回避)。
+     */
+    internal fun extractPlaylistUrls(
+        xml: String,
+        areafree: Boolean?,
+        timefree: Boolean,
+    ): List<String> {
         // <url ...> ブロックごとに areafree/timefree 属性と playlist_create_url を抽出
         val urlBlockRegex = Regex("""<url\b([^>]*)>\s*<playlist_create_url>([^<]+)</playlist_create_url>""")
-        val targetAreafree = if (areafree) "1" else "0"
+        val targetAreafree = if (areafree == null) null else if (areafree) "1" else "0"
         val targetTimefree = if (timefree) "1" else "0"
 
+        // 候補を収集 (URL と areafree 属性を保持)
+        data class Candidate(val url: String, val areafree: Int)
+        val matched = mutableListOf<Candidate>()
         for (match in urlBlockRegex.findAll(xml)) {
             val attrs = match.groupValues[1]
             val url = match.groupValues[2]
-            val urlAreafree = Regex("""areafree="(\d+)"""").find(attrs)?.groupValues?.get(1)
+            val urlAreafree = Regex("""areafree="(\d+)"""").find(attrs)?.groupValues?.get(1)?.toIntOrNull() ?: 0
             val urlTimefree = Regex("""timefree="(\d+)"""").find(attrs)?.groupValues?.get(1)
-            if (urlAreafree == targetAreafree && urlTimefree == targetTimefree) {
-                return url
+            val areafreeOk = targetAreafree == null || urlAreafree == targetAreafree.toIntOrNull()
+            if (areafreeOk && urlTimefree == targetTimefree) {
+                matched.add(Candidate(url, urlAreafree))
             }
         }
-        throw IOException("station XML から playlist_create_url を見つけられませんでした (areafree=$areafree, timefree=$timefree)")
+        // 優先順位:
+        //   1. areafree=1 (地域フリー) を先に試す (一般局はここで成功する)
+        //   2. areafree=0 (地域固定) はフォールバック (NHK 等で si-c が 504 のとき使う)
+        // 各グループ内では dr-wowza → smartstream → その他 の順
+        return matched.sortedWith(
+            compareBy({ it.areafree == 0 }, { playlistPriority(it.url) }),
+        ).map { it.url }
+    }
+
+    private fun playlistPriority(url: String): Int = when {
+        url.contains("dr-wowza") -> 0
+        url.contains("smartstream") -> 1
+        else -> 2
     }
 
     /**
      * ライブ再生用の medialist URL を取得する。
+     * 候補 URL を優先順位で順に試し、成功した最初の medialist URL を返す。
      * @param token 認証トークン (X-Radiko-AuthToken)
      */
     suspend fun resolveLiveMedialistUrl(
@@ -121,9 +157,18 @@ class StreamUrlResolver(
         token: String,
         lsid: String = RadikoApi.randomHex32(),
     ): String {
-        val playlistUrl = getLivePlaylistUrl(stationId)
-        val m3u8Url = buildLivePlaylistUrl(stationId, playlistUrl, lsid)
-        return resolveMedialist(m3u8Url, token)
+        val playlistUrls = getLivePlaylistUrls(stationId)
+        var lastError: Exception? = null
+        for (playlistUrl in playlistUrls) {
+            val m3u8Url = buildLivePlaylistUrl(stationId, playlistUrl, lsid)
+            try {
+                return resolveMedialist(m3u8Url, token)
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "ライブ playlist 失敗 (${playlistUrl}): ${e.message}")
+            }
+        }
+        throw lastError ?: IOException("ライブ再生用の playlist URL が見つかりませんでした")
     }
 
     /**
@@ -145,6 +190,13 @@ class StreamUrlResolver(
         val headers = mapOf("X-Radiko-AuthToken" to token)
         val body = apiClient.getString(m3u8Url, headers)
         Log.d(TAG, "m3u8 (${m3u8Url.take(80)}...): ${body.take(200)}")
-        return extractMedialistUrl(body)
+        val medialistUrl = extractMedialistUrl(body)
+
+        // medialist URL 自体を GET して 200 が返ることを確認する。
+        // NHK などでは si-c の medialist が HTTP 504 を返す (m3u8 は成功する)。
+        // ここで検証して失敗したら呼び出し側のフォールバックに委ねる。
+        val checkBody = apiClient.getString(medialistUrl, headers)
+        Log.d(TAG, "medialist (${medialistUrl.take(80)}...): ${checkBody.take(120)}")
+        return medialistUrl
     }
 }

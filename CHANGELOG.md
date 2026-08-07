@@ -1,0 +1,55 @@
+# Changelog
+
+このプロジェクトの変更履歴。形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に準拠。
+
+## [Unreleased]
+
+### Fixed
+
+- NHK FM / NHK AM のライブ再生が HTTP 504 で失敗する問題を修正。NHK の station stream で `areafree=1` の smartstream 系 (si-c / si-f) が medialist で 504 を返すため、medialist URL を GET して 200 を検証し、dr-wowza (`areafree=0`) へ自動フォールバックする方式を実装（`StreamUrlResolver`）
+- NHK FM (JOAK-FM) が radiko の局一覧 API (region/full.xml) に含まれず局一覧に表示されない問題を修正。全国放送局として固定定義し、全エリアの局一覧・番組表プリロード・検索に含めるようにした（`StationRepository`）
+
+### Added
+
+- プレイヤー（ミニ/全画面）に現在放送中の番組名を随時更新して表示。ライブ再生中は番組表から現在放送中 (`isOnAir`) の番組タイトルを取得し、30秒ごとに自動更新（`AppViewModel`）
+- テスト: `StreamUrlResolverTest` に NHK XML パターンの優先順位テスト 2 件追加
+
+## [1.0.0] - 2026-08-07
+
+### Added (initial Kotlin rebuild)
+
+- Flutter 版で発生した HLS Source Error を解決するため、Media3/ExoPlayer を直接制御する Kotlin + Jetpack Compose ネイティブ実装として再実装
+- ライブ再生: 放送局一覧 → タップ → 認証 → 再生
+- タイムフリー再生: 過去分の番組リスト → 再生（シーク・一時停止・再開）
+- 番組表: 局一覧 × 時間 (JST 5:00 起点 24 時間) のグリッド、日付チップ、放送中ハイライト
+- エリアごと一日一回の番組表永続キャッシュ (DataStore)。選択エリア全局の並列取得 + 起動時プリロード
+- タイムフリー全局横断検索（現在エリアの局のみ）
+- EPG 局ロゴ表示（番組表ヘッダー・全画面プレイヤー）
+- 全画面プレイヤー（番組ロゴ・局ロゴ・シークバー）
+- 番組詳細ダイアログ（番組タップで表示、未来番組は「聞く」無効化）
+- 戻るボタン操作（全画面プレイヤー → タブ → LIVE 以外でホームへ）
+- 番組開始通知（リマインダー）
+- バックグラウンド再生 (Media3 MediaSessionService)
+- 設定: エリア選択（47都道府県）、テーマ（自動/ライト/ダーク + ダイナミックカラー）、バックグラウンド再生、認証キャッシュ削除、バージョン表示
+- ミニプレイヤー（画面下部固定）
+- HLS 回避策: medialist URL 直接再生 + 認証ヘッダー全適用 + ID3 付き ADTS セグメント対応
+
+### Fixed (bug audit, 2026-08-07)
+
+- 番組表キャッシュの日付基準を JST 5:00 起点に統一（深夜 0:00-4:59 の一日一回制御が壊れる問題）
+- 放送休止局のカバレッジ判定（空リストもキャッシュ保存、1局以上成功時のみ TTL 記録）
+- RadikoPlayer の位置ポーリングリーク（`released` フラグ + `pollScope` キャンセル）
+- タイムフリー検索・キャッシュに旧エリアの局が混ざる問題 → 現在エリアの局のみにフィルタ
+- エリア変更時に検索が再実行されない / 選択中局が消える問題
+- 未来の番組で「聞く」が再生失敗する問題（ボタン無効化 + ガード）
+- Snackbar が全画面プレイヤーに隠れる問題
+- 古いプレイヤーエラーが再表示される問題 (`clearError`)
+- radiko API の "null" 文字列が表示される問題（パース時 + 読み取り時 + UI 3箇所で正規化）
+- エリア変更後のプリロード未実行問題
+
+### Technical notes
+
+- 技術スタック: Kotlin 2.3.20 / Jetpack Compose (Material 3) / Media3 1.9.4 / OkHttp 4.12.0 / kotlinx.serialization / DataStore
+- minSdk 26 / targetSdk 36
+- ビルド: `export JAVA_HOME=/home/yuchi0531/jdk17 && ./gradlew assembleDebug`
+- テスト: `./gradlew testDebugUnitTest`（32 件全パス）

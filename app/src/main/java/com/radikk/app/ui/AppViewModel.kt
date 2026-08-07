@@ -21,9 +21,11 @@ import com.radikk.app.player.StreamUrlResolver
 import com.radikk.app.util.RadikoTimeUtil
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.Instant
 
@@ -283,21 +285,83 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val medialistUrl = resolver.resolveLiveMedialistUrl(station.id, session.token)
                 radikoPlayer.playMedialist(medialistUrl)
 
+                // ライブ再生中は現在の番組名を番組表から随時更新して表示する
+                val currentProgram = loadCurrentProgramTitle(station.id)
                 _nowPlaying.value = NowPlaying(
                     stationId = station.id,
                     stationName = station.name,
-                    title = "ライブ放送",
+                    title = currentProgram ?: "ライブ放送",
                     isTimefree = false,
                     stationLogoUrl = station.logoUrl,
                 )
+                startLiveTitleRefresher(station)
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "ライブ再生を開始できませんでした"
             }
         }
     }
 
+    /**
+     * 現在放送中の番組タイトルを番組表キャッシュから取得する。
+     * 取得に失敗した場合や放送中番組が見つからない場合は null を返す。
+     *
+     * 注意: ここではキャッシュを保存しない (programCache.putPrograms は全局置換のため、
+     * 1局分の保存が他の局のキャッシュを消してしまう)。
+     */
+    private suspend fun loadCurrentProgramTitle(stationId: String): String? = runCatching {
+        val areaId = _selectedAreaId.value
+        val apiDate = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart())
+        // 今日分の番組表を取得 (キャッシュ優先)
+        val cached = programCache.getPrograms(areaId, apiDate)[stationId].orEmpty()
+        val programs = if (cached.isNotEmpty()) {
+            cached
+        } else {
+            // キャッシュにない場合はネットワーク取得 (保存はしない)
+            runCatching { programRepo.getPrograms(stationId, apiDate) }.getOrDefault(emptyList())
+        }
+        programs
+    }.getOrNull()
+        ?.firstOrNull { RadikoTimeUtil.isOnAir(it.ft, it.to) }
+        ?.let { it.title }
+        ?.takeIf { it.isNotBlank() }
+
+    /**
+     * ライブ再生中の番組名を定期的に更新する。
+     * 番組切替 (ft/to) に追従するため 30 秒ごとに現在放送中番組を再取得する。
+     * 再生状態がライブでなくなったら停止する。
+     */
+    private var liveTitleJob: kotlinx.coroutines.Job? = null
+
+    private fun startLiveTitleRefresher(station: Station) {
+        liveTitleJob?.cancel()
+        liveTitleJob = viewModelScope.launch {
+            while (isActive) {
+                delay(30_000)
+                // 再生中でない・ライブでない場合は停止
+                val np = _nowPlaying.value ?: break
+                if (np.isTimefree || np.stationId != station.id) break
+                if (!radikoPlayer.uiState.value.isPlaying) break
+                val title = loadCurrentProgramTitle(station.id)
+                if (title != null && title != _nowPlaying.value?.title) {
+                    _nowPlaying.value = _nowPlaying.value?.copy(title = title)
+                }
+            }
+            liveTitleJob = null
+        }
+    }
+
+    /** 再生を停止する。 */
+    fun stop() {
+        radikoPlayer.stop()
+        liveTitleJob?.cancel()
+        liveTitleJob = null
+    }
+
     /** タイムフリー再生を開始する。 */
     fun playTimefree(station: Station, program: Program) {
+        // ライブ用タイトル更新を停止する (タイムフリーは固定の番組名)
+        liveTitleJob?.cancel()
+        liveTitleJob = null
         viewModelScope.launch {
             _errorMessage.value = null
             try {
