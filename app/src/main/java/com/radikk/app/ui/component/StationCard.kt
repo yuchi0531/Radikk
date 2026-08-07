@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.radikk.app.data.model.Station
@@ -28,6 +29,7 @@ fun StationCard(
     station: Station,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    nowPlayingTitle: String? = null,
 ) {
     Card(
         modifier = modifier
@@ -64,6 +66,15 @@ fun StationCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (!nowPlayingTitle.isNullOrBlank()) {
+                    Text(
+                        text = "放送中: $nowPlayingTitle",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }

@@ -22,7 +22,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -74,6 +76,9 @@ fun TimefreeScreen(
     BackHandler(enabled = selectedStation != null) {
         selectedStation = null
     }
+
+    // 検索 / 局から選ぶ モード
+    var mode by remember { mutableStateOf(TimefreeMode.SEARCH) }
 
     // 検索状態
     var searchQuery by remember { mutableStateOf("") }
@@ -144,74 +149,105 @@ fun TimefreeScreen(
                 }
                 is AppViewModel.StationUiState.Success -> {
                     if (selectedStation == null) {
-                        // 検索モード (全局横断)
                         Column(Modifier.fillMaxSize()) {
-                            // 検索バー
-                            OutlinedTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                placeholder = { Text("番組名・パーソナリティで検索") },
-                                leadingIcon = {
-                                    Icon(Icons.Filled.Search, contentDescription = null)
-                                },
-                                singleLine = true,
-                            )
+                            // 検索 / 局から選ぶ モード切り替えタブ
+                            PrimaryTabRow(selectedTabIndex = if (mode == TimefreeMode.SEARCH) 0 else 1) {
+                                Tab(
+                                    selected = mode == TimefreeMode.SEARCH,
+                                    onClick = { mode = TimefreeMode.SEARCH },
+                                    text = { Text("検索") },
+                                )
+                                Tab(
+                                    selected = mode == TimefreeMode.STATIONS,
+                                    onClick = { mode = TimefreeMode.STATIONS },
+                                    text = { Text("局から選ぶ") },
+                                )
+                            }
 
-                            if (searchLoading) {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(32.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    CircularProgressIndicator()
-                                }
-                            } else if (searchQuery.isNotBlank()) {
-                                // 検索結果一覧 (全局横断)
-                                if (searchResults.isEmpty()) {
-                                    Box(
-                                        Modifier
+                            when (mode) {
+                                TimefreeMode.SEARCH -> {
+                                    // 検索バー
+                                    OutlinedTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(32.dp),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Text(
-                                            "該当する番組がありません",
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                } else {
-                                    LazyColumn(
-                                        contentPadding = PaddingValues(16.dp),
-                                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                                    ) {
-                                        items(searchResults, key = { it.stationId + "|" + it.ftEpochMillis }) { cached ->
-                                            val station = stations.firstOrNull { it.id == cached.stationId }
-                                            SearchResultRow(
-                                                cached = cached,
-                                                onClick = {
-                                                    if (station != null) {
-                                                        viewModel.playCachedTimefree(station, cached)
-                                                    }
-                                                },
+                                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                                        placeholder = { Text("番組名・パーソナリティで検索") },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.Search, contentDescription = null)
+                                        },
+                                        singleLine = true,
+                                    )
+
+                                    if (searchLoading) {
+                                        Box(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .padding(32.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            CircularProgressIndicator()
+                                        }
+                                    } else if (searchQuery.isNotBlank()) {
+                                        // 検索結果一覧 (全局横断)
+                                        if (searchResults.isEmpty()) {
+                                            Box(
+                                                Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(32.dp),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                Text(
+                                                    "該当する番組がありません",
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        } else {
+                                            LazyColumn(
+                                                contentPadding = PaddingValues(16.dp),
+                                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                            ) {
+                                                items(searchResults, key = { it.stationId + "|" + it.ftEpochMillis }) { cached ->
+                                                    val station = stations.firstOrNull { it.id == cached.stationId }
+                                                    SearchResultRow(
+                                                        cached = cached,
+                                                        onClick = {
+                                                            if (station != null) {
+                                                                viewModel.playCachedTimefree(station, cached)
+                                                            }
+                                                        },
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        // 検索語が空: 検索を促すヒント
+                                        Box(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .padding(32.dp),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text(
+                                                "番組名・パーソナリティで検索できます",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
                                     }
                                 }
-                            } else {
-                                // 局一覧 (タップでその局の番組リストへ)
-                                LazyColumn(
-                                    contentPadding = PaddingValues(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    items(stations, key = { it.id }) { station ->
-                                        StationCard(
-                                            station = station,
-                                            onClick = { selectedStation = station },
-                                        )
+                                TimefreeMode.STATIONS -> {
+                                    // 局一覧 (タップでその局の番組リストへ)
+                                    LazyColumn(
+                                        contentPadding = PaddingValues(16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        items(stations, key = { it.id }) { station ->
+                                            StationCard(
+                                                station = station,
+                                                onClick = { selectedStation = station },
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -412,3 +448,6 @@ private fun TimefreeProgramRow(
         )
     }
 }
+
+/** タイムフリー画面のモード。 */
+private enum class TimefreeMode { SEARCH, STATIONS }

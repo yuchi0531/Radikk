@@ -32,7 +32,7 @@ import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.FullPlayerScreen
 import com.radikk.app.ui.component.MiniPlayer
 import com.radikk.app.ui.navigation.BottomTab
-import com.radikk.app.ui.screen.LiveScreen
+import com.radikk.app.ui.screen.HomeScreen
 import com.radikk.app.ui.screen.ProgramGuideScreen
 import com.radikk.app.ui.screen.SettingsScreen
 import com.radikk.app.ui.screen.TimefreeScreen
@@ -79,7 +79,7 @@ object ReminderPlaybackEvents {
 
 /**
  * Radikk のメインアクティビティ。
- * ボトムナビ 4 タブ (ライブ / 番組表 / タイムフリー / 設定) をホストする。
+ * ボトムナビ 4 タブ (ホーム / 番組表 / タイムフリー / 設定) をホストする。
  * 通知タップ (ACTION_PLAY_FROM_REMINDER) でその番組を再生する。
  */
 class MainActivity : ComponentActivity() {
@@ -125,16 +125,16 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AppScaffold(viewModel: AppViewModel) {
-    var selectedTab by remember { mutableStateOf(BottomTab.LIVE) }
+    var selectedTab by remember { mutableStateOf(BottomTab.HOME) }
     var showFullPlayer by remember { mutableStateOf(false) }
     val errorMessage by viewModel.errorMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // ホーム（ライブ）タブ以外で戻るボタンを押したらホームへ戻る。
+    // ホームタブ以外で戻るボタンを押したらホームタブへ戻る。
     // ホームタブではバックを無効にして、システム標準の動作（アプリ終了）に委ねる。
     // 各画面内のサブ状態（局選択中など）は各画面側の BackHandler が先に消費する。
-    BackHandler(enabled = selectedTab != BottomTab.LIVE) {
-        selectedTab = BottomTab.LIVE
+    BackHandler(enabled = selectedTab != BottomTab.HOME) {
+        selectedTab = BottomTab.HOME
     }
     // 全画面プレイヤー表示中はバックで閉じる。
     // 最後に登録した BackHandler が優先されるため、こちらを後に配置する。
@@ -196,7 +196,7 @@ private fun AppScaffold(viewModel: AppViewModel) {
                     .padding(innerPadding),
             ) {
                 when (selectedTab) {
-                    BottomTab.LIVE -> LiveScreen(viewModel)
+                    BottomTab.HOME -> HomeScreen(viewModel)
                     BottomTab.PROGRAM_GUIDE -> ProgramGuideScreen(viewModel)
                     BottomTab.TIMEFREE -> TimefreeScreen(viewModel)
                     BottomTab.SETTINGS -> SettingsScreen(viewModel)

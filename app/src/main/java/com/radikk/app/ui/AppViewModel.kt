@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.radikk.app.RadikkApplication
 import com.radikk.app.data.datastore.AppSettings
 import com.radikk.app.data.datastore.ThemeMode
+import com.radikk.app.data.history.HistoryEntry
+import com.radikk.app.data.history.HistoryRepository
 import com.radikk.app.data.model.AuthSession
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
@@ -23,8 +25,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -43,6 +47,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val reminderRepo = app.reminderRepository
     private val timefreeCache = app.timefreeCacheRepository
     private val programCache = app.programCacheRepository
+    private val historyRepo = app.historyRepository
 
     val radikoPlayer = RadikoPlayer(application)
 
@@ -95,6 +100,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // --- 番組開始通知 (リマインダー) ---
     private val _reminders = MutableStateFlow<List<StoredReminder>>(emptyList())
     val reminders: StateFlow<List<StoredReminder>> = _reminders.asStateFlow()
+
+    // --- 聞いた番組の履歴 ---
+    val history: StateFlow<List<HistoryEntry>> = historyRepo.history.stateIn(
+        viewModelScope, SharingStarted.Eagerly, emptyList()
+    )
 
     init {
         // PlaybackService に共有 MediaSession を公開 (バックグラウンド再生用)
@@ -286,14 +296,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 radikoPlayer.playMedialist(medialistUrl)
 
                 // ライブ再生中は現在の番組名を番組表から随時更新して表示する
-                val currentProgram = loadCurrentProgramTitle(station.id)
+                val titleUsed = loadCurrentProgramTitle(station.id)
                 _nowPlaying.value = NowPlaying(
                     stationId = station.id,
                     stationName = station.name,
-                    title = currentProgram ?: "ライブ放送",
+                    title = titleUsed ?: "ライブ放送",
                     isTimefree = false,
                     stationLogoUrl = station.logoUrl,
                 )
+                historyRepo.add(HistoryEntry(
+                    stationId = station.id,
+                    stationName = station.name,
+                    programTitle = titleUsed ?: station.name,
+                    isTimefree = false,
+                    listenedAtEpochMillis = Instant.now().toEpochMilli(),
+                ))
                 startLiveTitleRefresher(station)
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "ライブ再生を開始できませんでした"
@@ -355,6 +372,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         radikoPlayer.stop()
         liveTitleJob?.cancel()
         liveTitleJob = null
+        _nowPlaying.value = null
     }
 
     /** タイムフリー再生を開始する。 */
@@ -388,6 +406,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     stationLogoUrl = station.logoUrl,
                     programImgUrl = program.imgUrl,
                 )
+                historyRepo.add(HistoryEntry(
+                    stationId = station.id,
+                    stationName = station.name,
+                    programTitle = program.title,
+                    isTimefree = true,
+                    listenedAtEpochMillis = Instant.now().toEpochMilli(),
+                ))
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "タイムフリー再生を開始できませんでした"
             }
@@ -675,6 +700,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setBackgroundPlayback(enabled: Boolean) {
         viewModelScope.launch { settings.setBackgroundPlayback(enabled) }
+    }
+
+    /** 聞いた番組の履歴を全削除する。 */
+    fun clearHistory() {
+        viewModelScope.launch { historyRepo.clear() }
+    }
+
+    /** 履歴エントリから再生する。タイムフリー期間内ならタイムフリー再生を試みる。 */
+    fun playHistoryEntry(entry: HistoryEntry) {
+        viewModelScope.launch {
+            val all = stationRepo.getStations()
+            val station = all.firstOrNull { it.id == entry.stationId }
+            if (station == null) {
+                _errorMessage.value = "局が見つかりません: ${entry.stationName}"
+                return@launch
+            }
+            // タイムフリー期間内 (7日) ならタイムフリー再生、それ以外はライブを試す
+            val now = Instant.now().toEpochMilli()
+            if (now - entry.listenedAtEpochMillis <= TimefreeCacheRepository.MAX_AGE_MILLIS) {
+                // 履歴の番組 (放送時刻不明) は現在時刻基準でライブ再生を優先し、
+                // 失敗時はタイムフリー一覧から該当番組を探して再生する
+                playLive(station)
+            } else {
+                _errorMessage.value = "この番組はタイムフリー期間を過ぎています"
+            }
+        }
     }
 
     /** 認証キャッシュ削除 */

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
@@ -80,6 +81,14 @@ fun MiniPlayer(
                 Icon(
                     imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     contentDescription = if (isPlaying) "一時停止" else "再生",
+                )
+            }
+            IconButton(
+                onClick = { viewModel.stop() },
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "停止",
                 )
             }
         }
