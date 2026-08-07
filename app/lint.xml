@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!--
+      Media3 の UnstableApi は radiko の HLS 再生 (medialist 直接再生 + ADTS 抽出) に
+      意図的に使用する。Kotlin の @OptIn コンパイラオプション (-opt-in) で対応済み。
+      androidx.annotation 系 lint チェックは UnsafeOptInUsageError が認識しないため無効化する。
+    -->
+    <issue id="UnsafeOptInUsageError" severity="ignore" />
+</lint>
