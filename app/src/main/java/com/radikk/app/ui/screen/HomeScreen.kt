@@ -26,29 +26,23 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.radikk.app.data.history.HistoryEntry
-import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
 import com.radikk.app.data.timefree.TimefreeCacheRepository
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.AreaSelector
 import com.radikk.app.ui.component.StationCard
-import com.radikk.app.util.RadikoTimeUtil
 import java.time.Instant
 
 /**
  * ホーム画面。
- * エリア選択・現在再生中・放送中番組・局一覧・聞いた履歴を縦スクロールで表示する。
+ * エリア選択・現在再生中・放送局・聞いた履歴を縦スクロールで表示する。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -63,16 +57,6 @@ fun HomeScreen(
     val history by viewModel.history.collectAsState()
 
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
-
-    // 放送中の番組 (エリア内全局の今日分番組表から on-air のみ抽出)
-    var nowPlayingPrograms by remember { mutableStateOf<List<Pair<Station, Program>>>(emptyList()) }
-    LaunchedEffect(stations.map { it.id }.joinToString(",")) {
-        if (stations.isEmpty()) return@LaunchedEffect
-        val map = viewModel.getProgramsForStations(stations, 0)
-        nowPlayingPrograms = stations.flatMap { s ->
-            map[s.id].orEmpty().filter { it.isOnAir() }.map { s to it }
-        }
-    }
 
     Scaffold(
         modifier = modifier,
@@ -103,7 +87,7 @@ fun HomeScreen(
                 )
             }
 
-            // 放送中番組 + 局一覧 (局一覧の状態に依存)
+            // 局一覧 (局一覧の状態に依存)
             when (val state = stationState) {
                 is AppViewModel.StationUiState.Loading -> {
                     Box(
@@ -124,19 +108,12 @@ fun HomeScreen(
                     )
                 }
                 is AppViewModel.StationUiState.Success -> {
-                    // 放送中番組
-                    OnAirSection(
-                        nowPlayingPrograms = nowPlayingPrograms,
-                        onProgramClick = { (station, _) -> viewModel.playLive(station) },
-                    )
-
                     // 局一覧
                     Text(
                         text = "放送局",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(top = 16.dp),
                     )
-                    val onAirTitles = nowPlayingPrograms.associate { it.first.id to it.second.title }
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -145,7 +122,6 @@ fun HomeScreen(
                             StationCard(
                                 station = station,
                                 onClick = { viewModel.playLive(station) },
-                                nowPlayingTitle = onAirTitles[station.id],
                             )
                         }
                     }
@@ -308,66 +284,6 @@ private fun HistoryRow(
             overflow = TextOverflow.Ellipsis,
         )
         HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
-    }
-}
-
-/**
- * 放送中番組セクション。タップでライブ再生。
- */
-@Composable
-private fun OnAirSection(
-    nowPlayingPrograms: List<Pair<Station, Program>>,
-    onProgramClick: (Pair<Station, Program>) -> Unit,
-) {
-    Text(
-        text = "放送中",
-        style = MaterialTheme.typography.titleMedium,
-        modifier = Modifier.padding(top = 16.dp),
-    )
-
-    if (nowPlayingPrograms.isEmpty()) {
-        Text(
-            text = "放送中の番組はありません",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = 8.dp),
-        )
-    } else {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            nowPlayingPrograms.forEach { (station, program) ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onProgramClick(station to program) }
-                        .padding(vertical = 8.dp),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Text(
-                            text = station.name,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            text = "${RadikoTimeUtil.formatTime(program.ft)} - ${RadikoTimeUtil.formatTime(program.to)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Text(
-                        text = program.title,
-                        style = MaterialTheme.typography.bodyLarge,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
-                }
-            }
-        }
     }
 }
 
