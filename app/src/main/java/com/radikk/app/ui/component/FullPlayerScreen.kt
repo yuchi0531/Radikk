@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.radikk.app.ui.AppViewModel
+import com.radikk.app.util.htmlToPlainText
 import java.util.Locale
 
 /**
@@ -151,6 +152,29 @@ fun FullPlayerScreen(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
             )
+
+            // 番組詳細 (パーソナリティ・説明)。ある場合のみ表示
+            if (!nowPlaying.performer.isNullOrBlank() && nowPlaying.performer != "null") {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "出演: ${nowPlaying.performer}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (!nowPlaying.description.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = htmlToPlainText(nowPlaying.description),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                    maxLines = 6,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
 
             Spacer(Modifier.weight(1f))
 

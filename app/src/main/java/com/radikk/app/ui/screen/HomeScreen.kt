@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -114,15 +115,28 @@ fun HomeScreen(
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(top = 16.dp),
                     )
+                    // 2列グリッド (縦スクロール Column 内のため LazyVerticalGrid は使わず
+                    // chunked で行に分割する)
+                    val chunked = stations.chunked(2)
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        stations.forEach { station ->
-                            StationCard(
-                                station = station,
-                                onClick = { viewModel.playLive(station) },
-                            )
+                        chunked.forEach { rowStations ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                rowStations.forEach { station ->
+                                    StationCard(
+                                        station = station,
+                                        onClick = { viewModel.playLive(station) },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                // 奇数個のとき右側を空ける
+                                if (rowStations.size == 1) Spacer(Modifier.weight(1f))
+                            }
                         }
                     }
                 }

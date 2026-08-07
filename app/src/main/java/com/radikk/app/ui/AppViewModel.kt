@@ -90,6 +90,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val isTimefree: Boolean,
         val stationLogoUrl: String? = null,
         val programImgUrl: String? = null,
+        val description: String? = null,
+        val performer: String? = null,
     )
 
     private val _errorMessage = MutableStateFlow<String?>(null)
@@ -424,6 +426,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     isTimefree = true,
                     stationLogoUrl = station.logoUrl,
                     programImgUrl = program.imgUrl,
+                    description = program.description,
+                    performer = program.performer,
                 )
                 historyRepo.add(HistoryEntry(
                     stationId = station.id,
@@ -686,6 +690,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     isTimefree = true,
                     stationLogoUrl = station.logoUrl,
                     programImgUrl = cached.imgUrl,
+                    description = cached.description,
+                    performer = cached.performer,
                 )
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "タイムフリー再生を開始できませんでした"

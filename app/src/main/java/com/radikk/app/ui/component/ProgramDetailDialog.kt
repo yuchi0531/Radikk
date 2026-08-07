@@ -6,14 +6,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,6 +34,7 @@ import coil.compose.AsyncImage
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
 import com.radikk.app.util.RadikoTimeUtil
+import com.radikk.app.util.htmlToPlainText
 
 /**
  * 番組詳細ダイアログ。
@@ -116,20 +123,27 @@ fun ProgramDetailDialog(
                     )
                 }
 
-                // 詳細説明
+                // 詳細説明 (HTML タグはプレーンテキストに変換)
                 if (!program.description.isNullOrBlank()) {
                     Text(
-                        text = program.description,
+                        text = htmlToPlainText(program.description),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                 }
 
                 // 開始通知の設定/解除 (本文末尾に配置。ボタン3つを横並びにしないため)
-                TextButton(
+                // 発見しやすいよう、アイコン付きの全幅アウトラインボタンにする
+                OutlinedButton(
                     onClick = onReminderClick,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
+                    Icon(
+                        imageVector = Icons.Filled.Notifications,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         text = if (isReminderSet) "通知を解除" else "開始通知を設定",
                         color = if (isReminderSet) {

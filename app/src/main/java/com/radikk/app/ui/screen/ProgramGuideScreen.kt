@@ -186,7 +186,7 @@ fun ProgramGuideScreen(
 
             // セルの操作方法ヒント
             Text(
-                text = "番組タップ = 詳細 / 長押し = 開始通知",
+                text = "番組をタップすると詳細・通知を設定できます",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
