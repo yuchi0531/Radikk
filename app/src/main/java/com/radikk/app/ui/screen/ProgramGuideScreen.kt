@@ -1,5 +1,6 @@
 package com.radikk.app.ui.screen
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -39,12 +40,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,6 +61,8 @@ import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.ProgramDetailDialog
 import com.radikk.app.util.RadikoTimeUtil
 import java.time.Instant
+import java.time.ZonedDateTime
+import kotlinx.coroutines.launch
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -88,6 +93,11 @@ fun ProgramGuideScreen(
     var selectedDayOffset by remember { mutableStateOf(0) }
 
     val context = LocalContext.current
+
+    // EPG グリッドの縦スクロール状態 (「今すぐ」ボタンで現在時刻へスクロールするため親で保持)
+    val columnScroll = rememberScrollState()
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
 
     // 通知設定ダイアログの対象番組
     var reminderTarget by remember { mutableStateOf<Pair<Station, Program>?>(null) }
@@ -185,6 +195,24 @@ fun ProgramGuideScreen(
                         },
                     )
                 }
+                // 現在時刻へジャンプ (今日のみ有効)
+                item {
+                    TextButton(
+                        onClick = {
+                            // 今日の 5:00 から現在時刻までのオフセットへスクロール
+                            val now = ZonedDateTime.now(RadikoTimeUtil.JST)
+                            val minutesFromStart =
+                                ((now.hour - GRID_START_HOUR) * 60 + now.minute).coerceAtLeast(0)
+                            val offsetPx = with(density) {
+                                (minutesFromStart / 60f * HOUR_HEIGHT_DP.value).dp.roundToPx()
+                            }
+                            scope.launch { columnScroll.animateScrollTo(offsetPx) }
+                        },
+                        enabled = selectedDayOffset == 0, // 今日のみ有効
+                    ) {
+                        Text("今すぐ")
+                    }
+                }
             }
 
             // セルの操作方法ヒント
@@ -220,6 +248,7 @@ fun ProgramGuideScreen(
                             stations = stations,
                             programsByStation = programsByStation,
                             dayOffset = selectedDayOffset,
+                            columnScroll = columnScroll,
                             reminderKeys = reminderKeys,
                             onStationClick = { station ->
                                 viewModel.playLive(station)
@@ -324,12 +353,16 @@ private const val GRID_HOURS = 24
  * EPG グリッド本体。
  * 横軸 = 局、縦軸 = 時間。時刻ラベルと局名ヘッダーを固定し、
  * 本体部分を横スクロール + 縦スクロールする。
+ *
+ * @param columnScroll 縦スクロール状態。「今すぐ」ボタンで現在時刻へ
+ * スクロールするため親 (ProgramGuideScreen) から受け取る。
  */
 @Composable
 private fun EpgGrid(
     stations: List<Station>,
     programsByStation: Map<String, List<Program>>,
     dayOffset: Int,
+    columnScroll: ScrollState,
     reminderKeys: Set<String>,
     onStationClick: (Station) -> Unit,
     onProgramClick: (Station, Program) -> Unit,
@@ -339,7 +372,6 @@ private fun EpgGrid(
     val gridStart = RadikoTimeUtil.todayDayStart()
         .plusSeconds(dayOffset * 24 * 3600L)
 
-    val columnScroll = rememberScrollState() // 縦スクロール
     val rowScroll = rememberScrollState()    // 横スクロール
 
     Column(Modifier.fillMaxSize()) {
@@ -598,7 +630,7 @@ private fun ProgramCell(
  * 番組開始通知の設定/解除ダイアログ。
  */
 @Composable
-private fun ReminderDialog(
+internal fun ReminderDialog(
     station: Station,
     program: Program,
     isSet: Boolean,

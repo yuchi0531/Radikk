@@ -80,6 +80,8 @@ fun TimefreeScreen(
     val downloads by viewModel.downloads.collectAsState()
     val downloadingKeys by viewModel.downloadingKeys.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
+    val timefreePreloading by viewModel.timefreePreloading.collectAsState()
+    val timefreePreloadProgress by viewModel.timefreePreloadProgress.collectAsState()
     var selectedStation by remember { mutableStateOf<Station?>(null) }
     var selectedDayOffset by remember { mutableStateOf(0) }
     var programs by remember { mutableStateOf<List<Program>>(emptyList()) }
@@ -110,12 +112,18 @@ fun TimefreeScreen(
     val scope = rememberCoroutineScope()
     var searchJob by remember { mutableStateOf<Job?>(null) }
 
+    // 日付フィルター (0=今日, 1=昨日, 3=〜3日以内, 7=すべて)。検索結果の絞り込みに使う。
+    var dateFilterDays by remember { mutableStateOf(7) }
+
     // 選択中のエリアの局一覧
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
 
     // ダウンロード済み番組のキー集合 (stationId, ftEpochMillis)。
     // downloads の変更で再計算されるため、各行のダウンロード状態が反応的に更新される。
     val downloadKeys = downloads.map { it.stationId to it.ftEpochMillis }.toSet()
+
+    // ダウンロード一覧の並び替え
+    var downloadSort by remember { mutableStateOf(DownloadSort.BY_AIR_TIME) }
 
     // エリア変更後、選択中の局が現在のエリアに存在しない場合は一覧へ戻す
     LaunchedEffect(stations.map { it.id }.joinToString(",")) {
@@ -130,13 +138,14 @@ fun TimefreeScreen(
 
     // 検索実行 (デバウンス付き: 300ms)
     // stations をキーに含める (エリア変更時に古いエリアの検索結果が残らないようにする)
-    LaunchedEffect(searchQuery, selectedStation, stations.map { it.id }.joinToString(",")) {
+    // dateFilterDays をキーに含める (チップ変更時に結果を再フィルタする)
+    LaunchedEffect(searchQuery, selectedStation, dateFilterDays, stations.map { it.id }.joinToString(",")) {
         if (selectedStation != null) return@LaunchedEffect // 局選択モードでは検索しない
         searchJob?.cancel()
         searchJob = scope.launch {
             kotlinx.coroutines.delay(300)
             searchLoading = true
-            searchResults = viewModel.searchTimefree(searchQuery, stations)
+            searchResults = viewModel.searchTimefree(searchQuery, stations, dateFilterDays)
             searchLoading = false
         }
     }
@@ -198,6 +207,27 @@ fun TimefreeScreen(
 
                             when (mode) {
                                 TimefreeMode.SEARCH -> {
+                                    // タイムフリー情報のプリロード中は準備中インジケーターを表示
+                                    if (timefreePreloading && searchQuery.isBlank()) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                            )
+                                            Text(
+                                                text = "タイムフリー情報を準備中 (${(timefreePreloadProgress * 100).toInt().coerceIn(0, 100)}%)…",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+
                                     // 検索バー
                                     OutlinedTextField(
                                         value = searchQuery,
@@ -211,6 +241,21 @@ fun TimefreeScreen(
                                         },
                                         singleLine = true,
                                     )
+
+                                    // 日付フィルター (検索語が空でも表示してよいが、検索結果の絞り込みに使う)
+                                    val dateFilterOptions = listOf(0 to "今日", 1 to "昨日", 3 to "3日以内", 7 to "すべて")
+                                    LazyRow(
+                                        contentPadding = PaddingValues(horizontal = 16.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        items(dateFilterOptions) { (days, label) ->
+                                            FilterChip(
+                                                selected = dateFilterDays == days,
+                                                onClick = { dateFilterDays = days },
+                                                label = { Text(label) },
+                                            )
+                                        }
+                                    }
 
                                     if (searchLoading) {
                                         Box(
@@ -306,11 +351,36 @@ fun TimefreeScreen(
                                             )
                                         }
                                     } else {
+                                        // 並び替えチップ
+                                        LazyRow(
+                                            contentPadding = PaddingValues(horizontal = 16.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            item {
+                                                FilterChip(
+                                                    selected = downloadSort == DownloadSort.BY_AIR_TIME,
+                                                    onClick = { downloadSort = DownloadSort.BY_AIR_TIME },
+                                                    label = { Text("放送日時") },
+                                                )
+                                            }
+                                            item {
+                                                FilterChip(
+                                                    selected = downloadSort == DownloadSort.BY_DOWNLOAD_TIME,
+                                                    onClick = { downloadSort = DownloadSort.BY_DOWNLOAD_TIME },
+                                                    label = { Text("ダウンロード日時") },
+                                                )
+                                            }
+                                        }
+
+                                        val sortedDownloads = when (downloadSort) {
+                                            DownloadSort.BY_AIR_TIME -> downloads.sortedByDescending { it.ftEpochMillis }
+                                            DownloadSort.BY_DOWNLOAD_TIME -> downloads.sortedByDescending { it.downloadedAtEpochMillis }
+                                        }
                                         LazyColumn(
                                             contentPadding = PaddingValues(16.dp),
                                             verticalArrangement = Arrangement.spacedBy(4.dp),
                                         ) {
-                                            items(downloads, key = { it.stationId + "|" + it.ftEpochMillis }) { entry ->
+                                            items(sortedDownloads, key = { it.stationId + "|" + it.ftEpochMillis }) { entry ->
                                                 DownloadedEntryRow(
                                                     entry = entry,
                                                     onClick = { viewModel.playDownloaded(entry) },
@@ -652,6 +722,9 @@ private fun DownloadedEntryRow(
 
 /** タイムフリー画面のモード。 */
 private enum class TimefreeMode { SEARCH, STATIONS, DOWNLOADS }
+
+/** ダウンロード一覧の並び替え。 */
+private enum class DownloadSort { BY_AIR_TIME, BY_DOWNLOAD_TIME }
 
 /**
  * キャッシュ済みタイムフリー番組を [Program] に変換する (ダウンロード実行用)。

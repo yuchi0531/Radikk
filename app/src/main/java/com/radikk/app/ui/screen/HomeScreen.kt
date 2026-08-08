@@ -1,5 +1,10 @@
 package com.radikk.app.ui.screen
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,11 +36,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.radikk.app.data.download.DownloadedProgram
+import com.radikk.app.data.model.Program
+import com.radikk.app.data.model.Station
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.AreaSelector
+import com.radikk.app.ui.component.ProgramDetailDialog
 import com.radikk.app.ui.component.StationCard
 import com.radikk.app.util.RadikoTimeUtil
 import java.time.Instant
@@ -55,17 +65,59 @@ fun HomeScreen(
     val stationState by viewModel.stationState.collectAsState()
     val selectedAreaId by viewModel.selectedAreaId.collectAsState()
     val downloads by viewModel.downloads.collectAsState()
+    val reminders by viewModel.reminders.collectAsState()
 
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
 
-    // エリア内全局の今日分番組表から on-air の番組名だけを抽出する
-    // (放送局一覧の「放送中: 〇〇」表示に使う)
-    var onAirTitles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val context = LocalContext.current
+
+    // 通知設定ダイアログの対象番組
+    var reminderTarget by remember { mutableStateOf<Pair<Station, Program>?>(null) }
+
+    // 番組詳細ダイアログの対象番組
+    var detailTarget by remember { mutableStateOf<Pair<Station, Program>?>(null) }
+
+    // 通知権限リクエスト (Android 13+)
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { granted ->
+            val target = reminderTarget
+            reminderTarget = null
+            if (granted && target != null) {
+                viewModel.setReminder(target.first, target.second)
+            } else if (!granted) {
+                viewModel.showError("通知権限が必要です。設定画面から許可してください")
+            }
+        },
+    )
+
+    /** 通知を設定する。未許可なら権限をリクエストする。 */
+    fun requestReminder(station: Station, program: Program) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                return
+            }
+        }
+        viewModel.setReminder(station, program)
+    }
+
+    // 通知設定済みの識別子セット (局ID + 開始時刻)
+    val reminderKeys = remember(reminders) {
+        reminders.map { it.stationId + "|" + it.startEpochMillis }.toSet()
+    }
+
+    // エリア内全局の今日分番組表から on-air の番組を抽出する
+    // (放送局一覧の「放送中: 〇〇」表示と詳細ダイアログに使う)
+    var onAirPrograms by remember { mutableStateOf<Map<String, Program>>(emptyMap()) }
     LaunchedEffect(stations.map { it.id }.joinToString(",")) {
         if (stations.isEmpty()) return@LaunchedEffect
         val map = viewModel.getProgramsForStations(stations, 0)
-        onAirTitles = map.entries.flatMap { (sid, progs) ->
-            progs.filter { it.isOnAir() }.map { sid to it.title }
+        onAirPrograms = map.entries.flatMap { (sid, progs) ->
+            progs.filter { it.isOnAir() }.map { sid to it }
         }.toMap()
     }
 
@@ -122,7 +174,10 @@ fun HomeScreen(
                             StationCard(
                                 station = station,
                                 onClick = { viewModel.playLive(station) },
-                                nowPlayingTitle = onAirTitles[station.id],
+                                nowPlayingTitle = onAirPrograms[station.id]?.title,
+                                onNowPlayingClick = onAirPrograms[station.id]?.let { program ->
+                                    { detailTarget = station to program }
+                                },
                             )
                         }
                     }
@@ -138,6 +193,72 @@ fun HomeScreen(
                 onShowAll = onShowAllDownloads,
             )
         }
+    }
+
+    // 番組詳細ダイアログ
+    detailTarget?.let { (station, program) ->
+        ProgramDetailDialog(
+            station = station,
+            program = program,
+            isOnAir = program.isOnAir(),
+            isPast = program.to.isBefore(Instant.now()),
+            isReminderSet = reminderKeys.contains(station.id + "|" + program.ft.toEpochMilli()),
+            onListen = {
+                detailTarget = null
+                when {
+                    program.isOnAir() -> viewModel.playLive(station)
+                    program.to.isBefore(Instant.now()) -> viewModel.playTimefree(station, program)
+                    // 未来の番組は再生不可 (ボタンは無効化されているが、念のためガード)
+                    else -> viewModel.showError("この番組はまだ放送されていません")
+                }
+            },
+            onReminderClick = {
+                // 通知設定/解除へ遷移 (既存の ReminderDialog を開く)
+                val isSet = reminderKeys.contains(station.id + "|" + program.ft.toEpochMilli())
+                if (isSet) {
+                    // 解除する場合は詳細ダイアログを閉じる
+                    detailTarget = null
+                    val id = com.radikk.app.data.reminder.ReminderRepository.reminderId(
+                        station.id, program.ft.toEpochMilli()
+                    )
+                    reminders.firstOrNull { it.id == id }?.let { viewModel.cancelReminder(it) }
+                } else {
+                    // 詳細ダイアログを閉じてから ReminderDialog を開く (重複表示防止)
+                    detailTarget = null
+                    reminderTarget = station to program
+                }
+            },
+            onDismiss = { detailTarget = null },
+        )
+    }
+
+    // 通知設定ダイアログ
+    reminderTarget?.let { (station, program) ->
+        ReminderDialog(
+            station = station,
+            program = program,
+            isSet = reminderKeys.contains(station.id + "|" + program.ft.toEpochMilli()),
+            onSet = {
+                requestReminder(station, program)
+                // 権限リクエストが発生する場合は reminderTarget を保持する
+                // (onResult で参照するため)。権限が許可済みなら即時設定される。
+                val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(
+                        context, Manifest.permission.POST_NOTIFICATIONS
+                    ) == PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    reminderTarget = null
+                }
+            },
+            onCancel = {
+                val id = com.radikk.app.data.reminder.ReminderRepository.reminderId(
+                    station.id, program.ft.toEpochMilli()
+                )
+                reminders.firstOrNull { it.id == id }?.let { viewModel.cancelReminder(it) }
+                reminderTarget = null
+            },
+            onDismiss = { reminderTarget = null },
+        )
     }
 }
 

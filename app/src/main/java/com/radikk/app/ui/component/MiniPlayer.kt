@@ -20,6 +20,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -28,8 +31,9 @@ import com.radikk.app.ui.AppViewModel
 
 /**
  * ミニプレイヤー。画面下部に固定表示。
- * 再生/停止ボタン + タップでフルプレイヤー。
- * 上部に再生位置を示す細いシークバー (読み取り専用の進捗表示) を表示する。
+ * 再生/停止ボタン + 下部 (局名・番組名) のタップでフルプレイヤー。
+ * 上部のシークバーはドラッグで直接シークできる (フルプレイヤーと同じ
+ * onValueChangeFinished で seekTo する方式。タップではフルプレイヤーを開かない)。
  */
 @Composable
 fun MiniPlayer(
@@ -44,9 +48,7 @@ fun MiniPlayer(
     val isPlaying = playerState.isPlaying
 
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
+        modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
         shadowElevation = 8.dp,
     ) {
@@ -55,13 +57,24 @@ fun MiniPlayer(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
-            // 再生位置の進捗バー。読み取り専用 (ドラッグ不可) で、タップはフルプレイヤーを開く。
+            // 再生位置のシークバー。ドラッグで直接シークできる。
             // ライブ (duration <= 0) は disabled トラックを表示し、タイムフリー/ダウンロード再生のみ進捗を示す。
+            // ドラッグ中のシーク位置。null ならポーリング値 (playerState.positionMs) を表示する。
+            // ポーリング更新と競合しないよう onValueChangeFinished でのみ seekTo する。
+            // 番組が変わったらリセットする (key = 局+番組開始時刻)。
+            var dragPositionMs by remember(nowPlaying.stationId, nowPlaying.title) {
+                mutableStateOf<Long?>(null)
+            }
+            val displayPositionMs = dragPositionMs ?: playerState.positionMs
             val durationMs = playerState.durationMs
             val maxValue = if (durationMs > 0) durationMs.toFloat() else 1f
             Slider(
-                value = playerState.positionMs.toFloat().coerceIn(0f, maxValue),
-                onValueChange = {},
+                value = displayPositionMs.toFloat().coerceIn(0f, maxValue),
+                onValueChange = { value -> dragPositionMs = value.toLong() },
+                onValueChangeFinished = {
+                    dragPositionMs?.let { viewModel.seekTo(it) }
+                    dragPositionMs = null
+                },
                 enabled = durationMs > 0,
                 valueRange = 0f..maxValue,
                 modifier = Modifier
@@ -71,6 +84,7 @@ fun MiniPlayer(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(onClick = onClick)
                     .padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),

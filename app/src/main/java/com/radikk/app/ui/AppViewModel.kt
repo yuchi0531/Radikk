@@ -33,6 +33,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * アプリ全体の ViewModel。
@@ -130,6 +131,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _downloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
     /** ダウンロード進捗 (0.0〜1.0)。キーは stationId|ftEpochMillis。 */
     val downloadProgress: StateFlow<Map<String, Float>> = _downloadProgress.asStateFlow()
+
+    // --- タイムフリー検索プリロード状態 ---
+    private val _timefreePreloading = MutableStateFlow(false)
+    /** タイムフリー全局×7日プリロード中か。 */
+    val timefreePreloading: StateFlow<Boolean> = _timefreePreloading.asStateFlow()
+
+    private val _timefreePreloadProgress = MutableStateFlow(0f)
+    /** プリロード進捗 (0.0〜1.0)。局×日付の取得完了率。 */
+    val timefreePreloadProgress: StateFlow<Float> = _timefreePreloadProgress.asStateFlow()
+
+    /** タイムフリー検索の準備状況: プリロード中の進捗%。完了済みなら null。 */
+    val timefreePreloadProgressPercent: Int
+        get() = if (_timefreePreloading.value) (_timefreePreloadProgress.value * 100).toInt().coerceIn(0, 100) else 100
 
     init {
         // PlaybackService に共有 MediaSession を公開 (バックグラウンド再生用)
@@ -230,39 +244,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // 12時間以内に実行済みならスキップ (毎回全局×7日を叩かない)
         if (System.currentTimeMillis() - lastTimefreePreloadAt < 12 * 3600 * 1000L) return
         runCatching {
-            val areaId = settings.currentSettings().areaId.ifEmpty { _selectedAreaId.value }
-            val stations = stationRepo.getStations().let { all -> stationRepo.filterByArea(all, areaId) }
-            if (stations.isEmpty()) return@runCatching
-            val session = auth.getSession(areaId) // 認証トークン (既存の Provider 経由でなく直接)
+            _timefreePreloading.value = true
+            _timefreePreloadProgress.value = 0f
+            try {
+                val areaId = settings.currentSettings().areaId.ifEmpty { _selectedAreaId.value }
+                val stations = stationRepo.getStations().let { all -> stationRepo.filterByArea(all, areaId) }
+                if (stations.isEmpty()) return@runCatching
+                val session = auth.getSession(areaId) // 認証トークン (既存の Provider 経由でなく直接)
 
-            // 過去7日分の日付 (offset 0=今日 ... 7=7日前)。タイムフリーは過去7日まで。
-            val days = 0..7
-            coroutineScope {
-                days.map { offset ->
-                    async {
-                        try {
+                // 過去7日分の日付 (offset 0=今日 ... 7=7日前)。タイムフリーは過去7日まで。
+                val days = 0..7
+                val total = stations.size * days.count() // 局×日付の総作業量
+                val completed = AtomicInteger(0)
+                coroutineScope {
+                    days.map { offset ->
+                        async {
                             // 局×日付を取得してタイムフリーキャッシュに保存 (局ループは直列で負荷を抑える)
                             stations.forEach { station ->
-                                val dayStart = RadikoTimeUtil.todayDayStart().minusSeconds(offset * 24 * 3600L)
-                                val apiDate = RadikoTimeUtil.apiDateFor(dayStart)
-                                val programs = programRepo.getPrograms(station.id, apiDate)
-                                val cached = programs.map { p ->
-                                    timefreeCache.toCached(p).copy(stationName = station.name)
+                                try {
+                                    val dayStart = RadikoTimeUtil.todayDayStart().minusSeconds(offset * 24 * 3600L)
+                                    val apiDate = RadikoTimeUtil.apiDateFor(dayStart)
+                                    val programs = programRepo.getPrograms(station.id, apiDate)
+                                    val cached = programs.map { p ->
+                                        timefreeCache.toCached(p).copy(stationName = station.name)
+                                    }
+                                    // 既存キャッシュとマージ (局ごとに保存)
+                                    val current = timefreeCache.currentCachedPrograms()[station.id].orEmpty()
+                                    val merged = (current + cached)
+                                        .distinctBy { it.ftEpochMillis }
+                                        .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
+                                    timefreeCache.putStationPrograms(station.id, merged)
+                                } catch (e: Exception) {
+                                    // 個別の局・日付の失敗は無視 (次回実行で補完)
+                                } finally {
+                                    // 成功・失敗にかかわらず局×日付を 1 つ完了扱いにして進捗を更新
+                                    _timefreePreloadProgress.value = completed.incrementAndGet() / total.toFloat()
                                 }
-                                // 既存キャッシュとマージ (局ごとに保存)
-                                val current = timefreeCache.currentCachedPrograms()[station.id].orEmpty()
-                                val merged = (current + cached)
-                                    .distinctBy { it.ftEpochMillis }
-                                    .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
-                                timefreeCache.putStationPrograms(station.id, merged)
                             }
-                        } catch (e: Exception) {
-                            // 個別の局・日付の失敗は無視 (次回実行で補完)
                         }
-                    }
-                }.forEach { it.await() }
+                    }.forEach { it.await() }
+                }
+                lastTimefreePreloadAt = System.currentTimeMillis()
+            } finally {
+                // 例外が逃げても確実にリセットする (runCatching は握りつぶすため finally で実施)
+                _timefreePreloading.value = false
+                _timefreePreloadProgress.value = 1f
             }
-            lastTimefreePreloadAt = System.currentTimeMillis()
         }
     }
 
@@ -634,8 +661,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * 検索結果は「現在のエリアの局」のみに限定する (エリア変更後も旧エリアの番組が混ざらない)。
      * @param query 検索キーワード (空なら全件・新しい順)
      * @param stations 現在のエリアの局一覧 (フィルタと局名補完用)
+     * @param maxDaysAgo 今日 (JST 日付境界) から遡る最大日数。0=今日のみ, 1=今日+昨日, ... 7=全期間。
+     *                   既定の 7 はタイムフリー期間全体を意味し、従来の挙動と同一。
      */
-    suspend fun searchTimefree(query: String, stations: List<Station>): List<CachedTimefreeProgram> {
+    suspend fun searchTimefree(
+        query: String,
+        stations: List<Station>,
+        maxDaysAgo: Int = 7,
+    ): List<CachedTimefreeProgram> {
         if (stations.isEmpty()) return emptyList()
         val byId = stations.associateBy { it.id }
         val stationIds = byId.keys
@@ -655,11 +688,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             .distinctBy { it.stationId + "|" + it.ftEpochMillis }
             .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
             .map { timefreeCache.withStationName(it, byId[it.stationId]?.name ?: "") }
+        // 日付フィルター: 今日の JST 日付境界から maxDaysAgo 日遡った時点より後の番組のみ残す
+        val cutoff = RadikoTimeUtil.todayDayStart().minusSeconds(maxDaysAgo * 24 * 3600L)
+        val filteredByDate = enriched.filter {
+            Instant.ofEpochMilli(it.ftEpochMillis).isAfter(cutoff) ||
+                Instant.ofEpochMilli(it.ftEpochMillis) == cutoff
+        }
         if (query.isBlank()) {
-            return enriched.sortedByDescending { it.ftEpochMillis }
+            return filteredByDate.sortedByDescending { it.ftEpochMillis }
         }
         val lower = query.trim().lowercase()
-        return enriched.filter {
+        return filteredByDate.filter {
             it.title.lowercase().contains(lower) ||
                 it.performer?.lowercase()?.contains(lower) == true ||
                 it.stationName.lowercase().contains(lower)

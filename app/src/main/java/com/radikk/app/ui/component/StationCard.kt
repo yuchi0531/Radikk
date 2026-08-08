@@ -23,6 +23,9 @@ import com.radikk.app.data.model.Station
 /**
  * 放送局カード。タップでライブ再生。
  * ロゴは radiko CDN から読み込む。
+ *
+ * @param onNowPlayingClick null 以外なら「放送中: 〇〇」のテキストをタップ可能にし、
+ * タップ時に呼び出される (カード全体の onClick は発火しない)。
  */
 @Composable
 fun StationCard(
@@ -30,6 +33,7 @@ fun StationCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     nowPlayingTitle: String? = null,
+    onNowPlayingClick: (() -> Unit)? = null,
 ) {
     Card(
         modifier = modifier
@@ -73,6 +77,11 @@ fun StationCard(
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = if (onNowPlayingClick != null) {
+                            Modifier.clickable(onClick = onNowPlayingClick)
+                        } else {
+                            Modifier
+                        },
                     )
                 }
             }
