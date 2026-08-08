@@ -169,6 +169,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             preloadTodayPrograms()
         }
+
+        // 起動時に選択エリア全局 × 過去7日分のタイムフリー番組表をプリロードする
+        // (全局横断のタイムフリー検索を即時利用可能にするため)
+        viewModelScope.launch {
+            preloadTimefreeCache()
+        }
     }
 
     /**
@@ -202,6 +208,56 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }.associate { it.await() }
             }
             programCache.putPrograms(areaId, apiDate, programsByStation)
+        }
+    }
+
+    /**
+     * 現在エリアの全局 × 過去7日分のタイムフリー番組表を並列取得して
+     * TimefreeCacheRepository に保存する。これにより「一度開いた局・日付」に
+     * 依存せず全局横断検索ができるようになる。
+     *
+     * 1日1回制御は時刻ベースで行う (最後に実行してから 12時間以上経過していれば再実行)。
+     * 起動時とエリア変更時 (changeArea) に呼ばれる。
+     */
+    private var lastTimefreePreloadAt: Long = 0L
+
+    private suspend fun preloadTimefreeCache() {
+        // 12時間以内に実行済みならスキップ (毎回全局×7日を叩かない)
+        if (System.currentTimeMillis() - lastTimefreePreloadAt < 12 * 3600 * 1000L) return
+        runCatching {
+            val areaId = settings.currentSettings().areaId.ifEmpty { _selectedAreaId.value }
+            val stations = stationRepo.getStations().let { all -> stationRepo.filterByArea(all, areaId) }
+            if (stations.isEmpty()) return@runCatching
+            val session = auth.getSession(areaId) // 認証トークン (既存の Provider 経由でなく直接)
+
+            // 過去7日分の日付 (offset 0=今日 ... 7=7日前)。タイムフリーは過去7日まで。
+            val days = 0..7
+            coroutineScope {
+                days.map { offset ->
+                    async {
+                        try {
+                            // 局×日付を取得してタイムフリーキャッシュに保存 (局ループは直列で負荷を抑える)
+                            stations.forEach { station ->
+                                val dayStart = RadikoTimeUtil.todayDayStart().minusSeconds(offset * 24 * 3600L)
+                                val apiDate = RadikoTimeUtil.apiDateFor(dayStart)
+                                val programs = programRepo.getPrograms(station.id, apiDate)
+                                val cached = programs.map { p ->
+                                    timefreeCache.toCached(p).copy(stationName = station.name)
+                                }
+                                // 既存キャッシュとマージ (局ごとに保存)
+                                val current = timefreeCache.currentCachedPrograms()[station.id].orEmpty()
+                                val merged = (current + cached)
+                                    .distinctBy { it.ftEpochMillis }
+                                    .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
+                                timefreeCache.putStationPrograms(station.id, merged)
+                            }
+                        } catch (e: Exception) {
+                            // 個別の局・日付の失敗は無視 (次回実行で補完)
+                        }
+                    }
+                }.forEach { it.await() }
+            }
+            lastTimefreePreloadAt = System.currentTimeMillis()
         }
     }
 
@@ -268,6 +324,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             loadStations()
             // 新エリアの「今日分」番組表をプリロードする (検索・番組表を即時利用可能に)
             preloadTodayPrograms()
+            // 新エリアの全局 × 過去7日分のタイムフリーをプリロードする。
+            // 起動時のプリロード済み状態だと 12時間スロットルでスキップされるため、
+            // ここでリセットして必ず新エリア分を取得させる。
+            lastTimefreePreloadAt = 0L
+            preloadTimefreeCache()
         }
     }
 
