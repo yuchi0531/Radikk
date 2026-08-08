@@ -15,6 +15,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.radikk.app.ui.AppViewModel
@@ -48,9 +50,16 @@ fun MiniPlayer(
     val nowPlaying = nowPlayingState ?: return
     val isPlaying = playerState.isPlaying
 
+    // ダークストリップ化: テーマのサーフェストークンはライト/ダーク両テーマで
+    // 「surfaceVariant より確実に暗い」ものが無いため、明示的な近黒色を使う。
+    // 背景を暗くした分、テキスト・アイコンは白系で可読性を維持する。
+    val miniPlayerBackground = Color(0xFF141414)
+    val miniPlayerContent = Color.White
+
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = miniPlayerBackground,
+        contentColor = miniPlayerContent,
         shadowElevation = 8.dp,
     ) {
         Column(
@@ -78,6 +87,16 @@ fun MiniPlayer(
                 },
                 enabled = durationMs > 0,
                 valueRange = 0f..maxValue,
+                // 暗い背景に対してシークバーを目立たせる: アクティブトラック・サムは白、
+                // 非アクティブトラックは半透明白。
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = Color.White,
+                    inactiveTrackColor = Color.White.copy(alpha = 0.3f),
+                    disabledThumbColor = Color.White.copy(alpha = 0.3f),
+                    disabledActiveTrackColor = Color.White.copy(alpha = 0.3f),
+                    disabledInactiveTrackColor = Color.White.copy(alpha = 0.15f),
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
                     // 既定の高さを維持する (thumb が潰れない)。height(6.dp) 指定は Slider を
@@ -93,12 +112,12 @@ fun MiniPlayer(
                     Text(
                         text = RadikoTimeUtil.formatDuration(displayPositionMs),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = Color.White.copy(alpha = 0.7f),
                     )
                     Text(
                         text = RadikoTimeUtil.formatDuration(durationMs),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = Color.White.copy(alpha = 0.7f),
                     )
                 }
             }
@@ -122,7 +141,7 @@ fun MiniPlayer(
                     Text(
                         text = nowPlaying.title,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = Color.White.copy(alpha = 0.85f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
