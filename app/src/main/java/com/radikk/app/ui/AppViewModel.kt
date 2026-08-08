@@ -974,10 +974,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { settings.setThemeMode(mode) }
     }
 
-    fun setDynamicColor(enabled: Boolean) {
-        viewModelScope.launch { settings.setDynamicColor(enabled) }
-    }
-
     /**
      * ダウンロード先を SAF (Storage Access Framework) の tree Uri で設定する。
      *

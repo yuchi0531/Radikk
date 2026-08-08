@@ -26,7 +26,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -115,12 +114,6 @@ fun SettingsScreen(
                     }
                 }
             }
-            SwitchRow(
-                title = "ダイナミックカラー",
-                checked = settings.dynamicColor,
-                onCheckedChange = { viewModel.setDynamicColor(it) },
-            )
-
             HorizontalDivider()
 
             // ダウンロード先
@@ -267,26 +260,6 @@ private fun DownloadPathSection(
             modifier = Modifier.padding(end = 8.dp),
         )
         Text("ダウンロード先を選択")
-    }
-}
-
-@Composable
-private fun SwitchRow(
-    title: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, modifier = Modifier.weight(1f))
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-        )
     }
 }
 

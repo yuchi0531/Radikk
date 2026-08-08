@@ -102,7 +102,6 @@ class MainActivity : ComponentActivity() {
 
             RadikkTheme(
                 themeMode = viewModel.settingsFlow.collectAsState().value.themeMode,
-                dynamicColor = viewModel.settingsFlow.collectAsState().value.dynamicColor,
             ) {
                 AppScaffold(viewModel)
             }

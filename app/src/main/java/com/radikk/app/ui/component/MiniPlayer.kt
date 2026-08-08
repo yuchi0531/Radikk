@@ -26,7 +26,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.radikk.app.ui.AppViewModel
@@ -50,16 +49,13 @@ fun MiniPlayer(
     val nowPlaying = nowPlayingState ?: return
     val isPlaying = playerState.isPlaying
 
-    // ダークストリップ化: テーマのサーフェストークンはライト/ダーク両テーマで
-    // 「surfaceVariant より確実に暗い」ものが無いため、明示的な近黒色を使う。
-    // 背景を暗くした分、テキスト・アイコンは白系で可読性を維持する。
-    val miniPlayerBackground = Color(0xFF141414)
-    val miniPlayerContent = Color.White
-
+    // テーマ連動: 背景は elevation のあるサーフェストークンで、ダーク/ライト両モードで
+    // アプリ背景と区別できる。テキスト・アイコンはテーマの既定色 (contentColor) を使い、
+    // ハードコード色を排除する (Monet 常時適用と両モード対応のため)。
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = miniPlayerBackground,
-        contentColor = miniPlayerContent,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shadowElevation = 8.dp,
     ) {
         Column(
@@ -87,15 +83,15 @@ fun MiniPlayer(
                 },
                 enabled = durationMs > 0,
                 valueRange = 0f..maxValue,
-                // 暗い背景に対してシークバーを目立たせる: アクティブトラック・サムは白、
-                // 非アクティブトラックは半透明白。
+                // Monet 対応: シークバーはテーマの primary 色で、ダークでは明るく、ライトでは
+                // 彩度の高いアクセントとして両モードで視認性を確保する。
                 colors = SliderDefaults.colors(
-                    thumbColor = Color.White,
-                    activeTrackColor = Color.White,
-                    inactiveTrackColor = Color.White.copy(alpha = 0.3f),
-                    disabledThumbColor = Color.White.copy(alpha = 0.3f),
-                    disabledActiveTrackColor = Color.White.copy(alpha = 0.3f),
-                    disabledInactiveTrackColor = Color.White.copy(alpha = 0.15f),
+                    thumbColor = MaterialTheme.colorScheme.primary,
+                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                    inactiveTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                    disabledThumbColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+                    disabledActiveTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                    disabledInactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -112,12 +108,12 @@ fun MiniPlayer(
                     Text(
                         text = RadikoTimeUtil.formatDuration(displayPositionMs),
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.7f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
                         text = RadikoTimeUtil.formatDuration(durationMs),
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.7f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -141,7 +137,7 @@ fun MiniPlayer(
                     Text(
                         text = nowPlaying.title,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.85f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )

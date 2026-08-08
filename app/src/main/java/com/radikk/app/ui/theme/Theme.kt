@@ -14,10 +14,10 @@ import com.radikk.app.data.datastore.ThemeMode
 
 /**
  * radiko のブランドカラー (赤) を基調にした M3 テーマ。
- * 設定 (ライト/ダーク/自動 + ダイナミックカラー) と連動する。
+ * Android 12+ では常に Monet (ダイナミックカラー) を使用し、設定 (ライト/ダーク/自動) と連動する。
  */
 
-// radiko のブランドレッド
+// radiko のブランドレッド (Android 12 未満のフォールバック用)
 val RadikoRed = Color(0xFFE60000)
 
 private val LightColors = lightColorScheme(
@@ -31,7 +31,6 @@ private val DarkColors = darkColorScheme(
 @Composable
 fun RadikkTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
-    dynamicColor: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()
@@ -41,13 +40,13 @@ fun RadikkTheme(
         ThemeMode.DARK -> true
     }
 
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColors
-        else -> LightColors
+    val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        // Android 12+ は常に Monet (壁紙由来のダイナミックカラー) を使用する
+        val context = LocalContext.current
+        if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    } else {
+        // Android 12 未満は radiko ブランドレッドのフォールバック
+        if (darkTheme) DarkColors else LightColors
     }
 
     MaterialTheme(
