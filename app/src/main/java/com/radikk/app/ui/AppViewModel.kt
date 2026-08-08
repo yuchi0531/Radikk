@@ -25,6 +25,7 @@ import com.radikk.app.player.StreamUrlResolver
 import com.radikk.app.util.RadikoTimeUtil
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -42,6 +43,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * 認証・局一覧・再生状態を管理し、各画面 (ライブ/番組表/タイムフリー/設定) に共有する。
  */
 class AppViewModel(application: Application) : AndroidViewModel(application) {
+
+    companion object {
+        /** タイムフリープリロード失敗時の最大リトライ回数 (成功時は 0 にリセット)。 */
+        private const val TIMEFREE_PRELOAD_RETRY_LIMIT = 3
+    }
 
     private val app = application as RadikkApplication
     private val settings = app.settingsRepository
@@ -247,8 +253,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      */
     private var lastTimefreePreloadAt: Long = 0L
 
+    /** 初回プリロード失敗時の連続リトライ回数 (成功時に 0 へリセット)。 */
+    private var preloadRetries = 0
+
     private suspend fun preloadTimefreeCache() {
-        // 12時間以内に実行済みならスキップ (毎回全局×7日を叩かない)
+        // 12時間以内に実行済みならスキップ (毎回全局×7日を叩かない)。
+        // lastTimefreePreloadAt は成功時のみ非 0 になるため、失敗時はスキップされない
         if (System.currentTimeMillis() - lastTimefreePreloadAt < 12 * 3600 * 1000L) return
         runCatching {
             _timefreePreloading.value = true
@@ -261,42 +271,57 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 // 過去7日分の日付 (offset 0=今日 ... 7=7日前)。タイムフリーは過去7日まで。
                 val days = 0..7
-                val total = stations.size * days.count() // 局×日付の総作業量
+                val total = stations.size // 局ごとに 1 単位として進捗を報告
                 val completed = AtomicInteger(0)
                 coroutineScope {
-                    days.map { offset ->
+                    // 局を並列化し、各局は全 8 日分をメモリ上で累積してから 1 回だけ書き込む。
+                    // (旧実装は日を並列化して同一局キーへ read-modify-write を競合実行しており、
+                    //  最後の書き込みが直前の書き込みを上書きする lost update を起こしていた)
+                    stations.map { station ->
                         async {
-                            // 局×日付を取得してタイムフリーキャッシュに保存 (局ループは直列で負荷を抑える)
-                            stations.forEach { station ->
-                                try {
+                            try {
+                                // 1局につき全8日分をメモリ上で累積してから1回だけ書く (lost update 防止)
+                                var accumulated = timefreeCache.currentCachedPrograms()[station.id].orEmpty()
+                                for (offset in days) {
                                     val dayStart = RadikoTimeUtil.todayDayStart().minusSeconds(offset * 24 * 3600L)
                                     val apiDate = RadikoTimeUtil.apiDateFor(dayStart)
-                                    val programs = programRepo.getPrograms(station.id, apiDate)
-                                    val cached = programs.map { p ->
-                                        timefreeCache.toCached(p).copy(stationName = station.name)
+                                    runCatching {
+                                        val programs = programRepo.getPrograms(station.id, apiDate)
+                                        val cached = programs.map { p ->
+                                            timefreeCache.toCached(p).copy(stationName = station.name)
+                                        }
+                                        accumulated = mergeCachedTimefree(
+                                            current = accumulated,
+                                            incoming = cached,
+                                            isWithinWindow = { timefreeCache.isWithinTimefree(it) },
+                                        )
                                     }
-                                    // 既存キャッシュとマージ (局ごとに保存)
-                                    val current = timefreeCache.currentCachedPrograms()[station.id].orEmpty()
-                                    val merged = (current + cached)
-                                        .distinctBy { it.ftEpochMillis }
-                                        .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
-                                    timefreeCache.putStationPrograms(station.id, merged)
-                                } catch (e: Exception) {
-                                    // 個別の局・日付の失敗は無視 (次回実行で補完)
-                                } finally {
-                                    // 成功・失敗にかかわらず局×日付を 1 つ完了扱いにして進捗を更新
-                                    _timefreePreloadProgress.value = completed.incrementAndGet() / total.toFloat()
                                 }
+                                timefreeCache.putStationPrograms(station.id, accumulated)
+                            } catch (e: Exception) {
+                                // 局単位の失敗は無視 (次回実行で補完)
+                            } finally {
+                                // 成功・失敗にかかわらず局ごとに 1 完了扱いにして進捗を更新
+                                _timefreePreloadProgress.value = completed.incrementAndGet() / total.toFloat()
                             }
                         }
                     }.forEach { it.await() }
                 }
                 lastTimefreePreloadAt = System.currentTimeMillis()
+                preloadRetries = 0
             } finally {
                 // 例外が逃げても確実にリセットする (runCatching は握りつぶすため finally で実施)
                 _timefreePreloading.value = false
                 _timefreePreloadProgress.value = 1f
             }
+        }
+        // 初回プリロードが失敗 (局一覧未ロード・認証失敗など) した場合は少し待って再試行する。
+        // lastTimefreePreloadAt は成功時のみ非 0 になるため、失敗が続けば 30 秒ごとに再試行される。
+        // 永続的な失敗で無限ループしないよう、リトライ回数を上限 (3回) で制限する。
+        if (lastTimefreePreloadAt == 0L && preloadRetries < TIMEFREE_PRELOAD_RETRY_LIMIT) {
+            preloadRetries++
+            delay(30_000)
+            if (currentCoroutineContext().isActive) preloadTimefreeCache()
         }
     }
 
@@ -657,9 +682,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             timefreeCache.toCached(p).copy(stationName = stationName)
         }
         // 重複除去 (ft で判別) + 期間内のみ保持
-        val merged = (current + cachedWithNames)
-            .distinctBy { it.ftEpochMillis }
-            .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
+        val merged = mergeCachedTimefree(
+            current = current,
+            incoming = cachedWithNames,
+            isWithinWindow = { timefreeCache.isWithinTimefree(it) },
+        )
         timefreeCache.putStationPrograms(stationId, merged)
         return programs
     }
@@ -1002,3 +1029,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 }
+
+/**
+ * 既存キャッシュに新規取得分をマージしてタイムフリー期間内のみ保持する (純関数)。
+ *
+ * タイムフリーキャッシュの read-modify-write を複数コルーチンが競合実行すると
+ * lost update が起きるため、マージはこの純関数に抽出しテスト可能にしている。
+ *
+ * @param current 既存キャッシュ (局ごとの累積リスト)
+ * @param incoming 新規取得分 (1日分など)
+ * @param isWithinWindow タイムフリー期間内か判定するラムダ (時刻は Instant で渡される)
+ */
+internal fun mergeCachedTimefree(
+    current: List<CachedTimefreeProgram>,
+    incoming: List<CachedTimefreeProgram>,
+    isWithinWindow: (Instant) -> Boolean,
+): List<CachedTimefreeProgram> = (current + incoming)
+    .distinctBy { it.ftEpochMillis }
+    .filter { isWithinWindow(Instant.ofEpochMilli(it.ftEpochMillis)) }
