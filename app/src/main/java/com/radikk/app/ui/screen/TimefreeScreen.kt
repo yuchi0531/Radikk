@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -41,6 +42,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.radikk.app.data.download.DownloadedProgram
@@ -75,6 +78,8 @@ fun TimefreeScreen(
 ) {
     val stationState by viewModel.stationState.collectAsState()
     val downloads by viewModel.downloads.collectAsState()
+    val downloadingKeys by viewModel.downloadingKeys.collectAsState()
+    val downloadProgress by viewModel.downloadProgress.collectAsState()
     var selectedStation by remember { mutableStateOf<Station?>(null) }
     var selectedDayOffset by remember { mutableStateOf(0) }
     var programs by remember { mutableStateOf<List<Program>>(emptyList()) }
@@ -237,9 +242,12 @@ fun TimefreeScreen(
                                             ) {
                                                 items(searchResults, key = { it.stationId + "|" + it.ftEpochMillis }) { cached ->
                                                     val station = stations.firstOrNull { it.id == cached.stationId }
+                                                    val searchKey = "${cached.stationId}|${cached.ftEpochMillis}"
                                                     SearchResultRow(
                                                         cached = cached,
                                                         isDownloaded = (cached.stationId to cached.ftEpochMillis) in downloadKeys,
+                                                        isDownloading = searchKey in downloadingKeys,
+                                                        downloadProgress = downloadProgress[searchKey] ?: 0f,
                                                         onClick = {
                                                             if (station != null) {
                                                                 viewModel.playCachedTimefree(station, cached)
@@ -394,9 +402,12 @@ fun TimefreeScreen(
                                         }
                                     } else {
                                         items(programs, key = { it.ft.toEpochMilli() }) { program ->
+                                            val programKey = "${station.id}|${program.ft.toEpochMilli()}"
                                             TimefreeProgramRow(
                                                 program = program,
                                                 isDownloaded = (station.id to program.ft.toEpochMilli()) in downloadKeys,
+                                                isDownloading = programKey in downloadingKeys,
+                                                downloadProgress = downloadProgress[programKey] ?: 0f,
                                                 onClick = { viewModel.playTimefree(station, program) },
                                                 onDownload = { viewModel.downloadTimefree(station, program) },
                                             )
@@ -419,6 +430,8 @@ fun TimefreeScreen(
 private fun SearchResultRow(
     cached: CachedTimefreeProgram,
     isDownloaded: Boolean,
+    isDownloading: Boolean = false,
+    downloadProgress: Float = 0f,
     onClick: () -> Unit,
     onDownload: () -> Unit,
 ) {
@@ -463,32 +476,25 @@ private fun SearchResultRow(
                 )
             }
         }
-        if (isDownloaded) {
-            Icon(
-                imageVector = Icons.Filled.CheckCircle,
-                contentDescription = "ダウンロード済み",
-                tint = MaterialTheme.colorScheme.primary,
-            )
-        } else {
-            IconButton(onClick = onDownload) {
-                Icon(
-                    imageVector = Icons.Filled.Download,
-                    contentDescription = "ダウンロード",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        DownloadStateIndicator(
+            isDownloaded = isDownloaded,
+            isDownloading = isDownloading,
+            downloadProgress = downloadProgress,
+            onDownload = onDownload,
+        )
     }
     HorizontalDivider()
 }
 
 /**
- * タイムフリー再生可能な番組の行。右端にダウンロードボタン (済みならチェック表示) 付き。
+ * タイムフリー再生可能な番組の行。右端にダウンロード状態表示付き。
  */
 @Composable
 private fun TimefreeProgramRow(
     program: Program,
     isDownloaded: Boolean,
+    isDownloading: Boolean = false,
+    downloadProgress: Float = 0f,
     onClick: () -> Unit,
     onDownload: () -> Unit,
 ) {
@@ -534,23 +540,63 @@ private fun TimefreeProgramRow(
                 )
             }
         }
-        if (isDownloaded) {
-            Icon(
-                imageVector = Icons.Filled.CheckCircle,
-                contentDescription = "ダウンロード済み",
-                tint = MaterialTheme.colorScheme.primary,
-            )
-        } else {
-            IconButton(onClick = onDownload) {
-                Icon(
-                    imageVector = Icons.Filled.Download,
-                    contentDescription = "ダウンロード",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
+        DownloadStateIndicator(
+            isDownloaded = isDownloaded,
+            isDownloading = isDownloading,
+            downloadProgress = downloadProgress,
+            onDownload = onDownload,
+        )
     }
     HorizontalDivider()
+}
+
+/**
+ * 番組行の右端に表示するダウンロード状態インジケーター。
+ *
+ * - ダウンロード中: 進捗スピナー + パーセント表示 (タップ不可)
+ * - ダウンロード済み: チェックアイコン
+ * - 未ダウンロード: ダウンロードボタン
+ */
+@Composable
+private fun DownloadStateIndicator(
+    isDownloaded: Boolean,
+    isDownloading: Boolean,
+    downloadProgress: Float,
+    onDownload: () -> Unit,
+) {
+    if (isDownloading) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .padding(horizontal = 8.dp)
+                .semantics { contentDescription = "ダウンロード中" },
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+            )
+            Text(
+                text = "${(downloadProgress * 100).toInt().coerceIn(0, 100)}%",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    } else if (isDownloaded) {
+        Icon(
+            imageVector = Icons.Filled.CheckCircle,
+            contentDescription = "ダウンロード済み",
+            tint = MaterialTheme.colorScheme.primary,
+        )
+    } else {
+        IconButton(onClick = onDownload) {
+            Icon(
+                imageVector = Icons.Filled.Download,
+                contentDescription = "ダウンロード",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
 }
 
 /**

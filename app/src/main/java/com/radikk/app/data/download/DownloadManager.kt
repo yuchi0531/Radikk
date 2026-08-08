@@ -83,6 +83,8 @@ class DownloadManager(
      *                      null でなければこちらへ書き出す (DocumentFile 経由)。
      * @param context [targetTreeUri] を使う場合に必要 (contentResolver 解決用)。
      * @param imgUrl 番組ロゴ URL (フルプレイヤー表示用)。無ければ null。
+     * @param description 番組の説明文 (フルプレイヤー表示用)。無ければ null。
+     * @param performer 番組の出演者 (フルプレイヤー表示用)。無ければ null。
      * @param onProgress 0.0〜1.0 の進捗コールバック (セグメント書き込みごとに呼ばれる)
      * @param freshTokenProvider 取得途中でトークンが失効した場合 (401) に呼ばれる
      *                           新トークン供給コールバック。null なら [mapAuthError] に委ねる。
@@ -101,6 +103,8 @@ class DownloadManager(
         targetTreeUri: Uri? = null,
         context: Context? = null,
         imgUrl: String? = null,
+        description: String? = null,
+        performer: String? = null,
         onProgress: (Float) -> Unit = {},
         freshTokenProvider: (suspend () -> String?)? = null,
     ): DownloadedProgram {
@@ -169,6 +173,8 @@ class DownloadManager(
             filePath = filePath,
             downloadedAtEpochMillis = System.currentTimeMillis(),
             imgUrl = imgUrl,
+            description = description,
+            performer = performer,
         )
         repo.add(entry)
         return entry

@@ -27,6 +27,10 @@ data class DownloadedProgram(
     val downloadedAtEpochMillis: Long,
     /** 番組ロゴ URL。フルプレイヤーで表示 (無ければ局ロゴにフォールバック)。 */
     val imgUrl: String? = null,
+    /** 番組の説明文。フルプレイヤーで表示 (ストリーミングのタイムフリーと同じ)。 */
+    val description: String? = null,
+    /** 番組の出演者。フルプレイヤーで表示 (ストリーミングのタイムフリーと同じ)。 */
+    val performer: String? = null,
 )
 
 /**

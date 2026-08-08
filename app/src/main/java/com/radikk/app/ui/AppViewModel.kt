@@ -123,8 +123,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope, SharingStarted.Eagerly, emptyList()
     )
 
-    /** ダウンロード処理中の番組キー (stationId|ftEpochMillis)。二重ダウンロード防止用。 */
-    private val downloadingKeys = mutableSetOf<String>()
+    private val _downloadingKeys = MutableStateFlow<Set<String>>(emptySet())
+    /** ダウンロード中の番組キー (stationId|ftEpochMillis)。 */
+    val downloadingKeys: StateFlow<Set<String>> = _downloadingKeys.asStateFlow()
+
+    private val _downloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
+    /** ダウンロード進捗 (0.0〜1.0)。キーは stationId|ftEpochMillis。 */
+    val downloadProgress: StateFlow<Map<String, Float>> = _downloadProgress.asStateFlow()
 
     init {
         // PlaybackService に共有 MediaSession を公開 (バックグラウンド再生用)
@@ -733,6 +738,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun isDownloaded(stationId: String, ftEpochMillis: Long): Boolean =
         downloads.value.any { it.stationId == stationId && it.ftEpochMillis == ftEpochMillis }
 
+    /** 指定番組がダウンロード中か。 */
+    fun isDownloading(stationId: String, ftEpochMillis: Long): Boolean =
+        _downloadingKeys.value.contains("$stationId|$ftEpochMillis")
+
+    /** 指定番組のダウンロード進捗 (0.0〜1.0)。ダウンロード中でなければ 0f。 */
+    fun downloadProgressOf(stationId: String, ftEpochMillis: Long): Float =
+        _downloadProgress.value["$stationId|$ftEpochMillis"] ?: 0f
+
     /** タイムフリー番組をダウンロードする。 */
     fun downloadTimefree(station: Station, program: Program) {
         viewModelScope.launch {
@@ -740,11 +753,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // 二重タップ・既存ダウンロードを防ぐ。launch は Main から始まるため、
             // このガードは最初の suspend (auth.getSession) より前に同期的に実行される。
             val key = "${station.id}|${program.ft.toEpochMilli()}"
-            if (downloadingKeys.contains(key) || isDownloaded(station.id, program.ft.toEpochMilli())) {
+            if (_downloadingKeys.value.contains(key) || isDownloaded(station.id, program.ft.toEpochMilli())) {
                 _errorMessage.value = "ダウンロード中またはダウンロード済みです"
                 return@launch
             }
-            downloadingKeys.add(key)
+            _downloadingKeys.value = _downloadingKeys.value + key
+            _downloadProgress.value = _downloadProgress.value + (key to 0f)
             try {
                 val session = auth.getSession(_selectedAreaId.value)
                 val entry = downloadManager.downloadProgram(
@@ -758,15 +772,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     targetTreeUri = downloadTargetTreeUri(),
                     context = app,
                     imgUrl = program.imgUrl,
+                    description = program.description,
+                    performer = program.performer,
                     // 取得途中でトークンが失効した場合 (401) は getSession で再認証して
                     // 新しいトークンでそのウィンドウ / セグメントを再試行する
                     freshTokenProvider = { runCatching { auth.getSession(_selectedAreaId.value).token }.getOrNull() },
+                    onProgress = { progress -> _downloadProgress.value = _downloadProgress.value + (key to progress) },
                 )
                 _errorMessage.value = "ダウンロード完了: ${program.title}"
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "ダウンロードに失敗しました"
             } finally {
-                downloadingKeys.remove(key)
+                _downloadingKeys.value = _downloadingKeys.value - key
+                _downloadProgress.value = _downloadProgress.value - key
             }
         }
     }
@@ -807,6 +825,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             isTimefree = true,
             // ダウンロード元の番組ロゴ (無ければフルプレイヤーが局ロゴへフォールバック)
             programImgUrl = entry.imgUrl,
+            description = entry.description,
+            performer = entry.performer,
         )
     }
 
