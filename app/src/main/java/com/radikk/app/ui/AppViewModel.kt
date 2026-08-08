@@ -396,10 +396,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 val resolver = StreamUrlResolver(app.apiClient)
                 val medialistUrl = resolver.resolveLiveMedialistUrl(station.id, session.token)
-                radikoPlayer.playMedialist(medialistUrl)
-
                 // ライブ再生中は現在の番組名を番組表から随時更新して表示する
                 val titleUsed = loadCurrentProgramTitle(station.id)
+                // メディア通知表示用メタデータは playMedialist より前に設定する
+                radikoPlayer.setMediaMetadata(titleUsed ?: "ライブ放送", station.name)
+                radikoPlayer.playMedialist(medialistUrl)
+
                 _nowPlaying.value = NowPlaying(
                     stationId = station.id,
                     stationName = station.name,
@@ -466,6 +468,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** 再生を停止する。 */
     fun stop() {
         radikoPlayer.stop()
+        radikoPlayer.stopPlaybackService()
         timefreeContext = null
         liveTitleJob?.cancel()
         liveTitleJob = null
@@ -493,6 +496,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     to = program.to,
                 )
                 val durationMs = (program.to.toEpochMilli() - program.ft.toEpochMilli()).coerceAtLeast(0L)
+                radikoPlayer.setMediaMetadata(program.title, station.name)
                 radikoPlayer.playMedialist(medialistUrl, durationOverrideMs = durationMs)
 
                 _nowPlaying.value = NowPlaying(
@@ -760,6 +764,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     to = Instant.ofEpochMilli(cached.toEpochMillis),
                 )
                 val durationMs = (cached.toEpochMillis - cached.ftEpochMillis).coerceAtLeast(0L)
+                radikoPlayer.setMediaMetadata(cached.title, station.name)
                 radikoPlayer.playMedialist(medialistUrl, durationOverrideMs = durationMs)
 
                 _nowPlaying.value = NowPlaying(
@@ -827,6 +832,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         timefreeContext = null
         // ローカルファイルは ExoPlayer が実ファイルから duration を読むため上書きは不要
         // (effectiveDuration がローカル再生時は実ファイルの duration を優先する)
+        radikoPlayer.setMediaMetadata(entry.programTitle, entry.stationName)
         radikoPlayer.playLocalFile(entry.filePath)
         _nowPlaying.value = NowPlaying(
             stationId = entry.stationId,

@@ -44,6 +44,15 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
         sharedMediaSession
 
+    /**
+     * RadikoPlayer が startForegroundService で明示的に起動するため、
+     * 再起動時も再生を継続できるよう START_STICKY を返す。
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        return START_STICKY
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         val session = sharedMediaSession
         val shouldStop = session?.player?.playbackState == Player.STATE_ENDED ||

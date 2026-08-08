@@ -1,19 +1,29 @@
 package com.radikk.app.player
 
+import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
+import com.radikk.app.MainActivity
+import androidx.core.content.ContextCompat
+import java.util.concurrent.Executor
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +56,9 @@ import java.io.File
 class RadikoPlayer(
     context: Context,
 ) {
+    /** サービス起動や通知用のアプリコンテキスト (Activity リーク防止のため applicationContext を使用) */
+    private val appContext: Context = context.applicationContext
+
     companion object {
         private const val TAG = "RadikoPlayer"
 
@@ -121,6 +134,17 @@ class RadikoPlayer(
     private var released = false
 
     init {
+        // メディア通知タップで MainActivity に戻るようにセッションアクティビティを設定する
+        val sessionActivity = PendingIntent.getActivity(
+            appContext,
+            0,
+            Intent(appContext, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        mediaSession.setSessionActivity(sessionActivity)
+
         _player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 updateState()
@@ -183,7 +207,10 @@ class RadikoPlayer(
             Log.e(TAG, "setAuth() が呼ばれていない")
             return
         }
-        val mediaItem = MediaItem.fromUri(medialistUrl)
+        val mediaItem = pendingMediaMetadata?.let {
+            MediaItem.Builder().setUri(medialistUrl).setMediaMetadata(it).build()
+        } ?: MediaItem.fromUri(medialistUrl)
+        pendingMediaMetadata = null
         val hlsSource: MediaSource = HlsMediaSource.Factory(factory)
             .createMediaSource(mediaItem)
 
@@ -199,6 +226,7 @@ class RadikoPlayer(
         if (startPositionMs in 1..300_000L) {
             runCatching { _player.seekTo(startPositionMs) }
         }
+        startPlaybackService()
         _player.play()
     }
 
@@ -221,13 +249,15 @@ class RadikoPlayer(
         playAnchorPositionMs = 0L
         isPlayingState = false
         val mediaItem = if (filePath.startsWith("content://")) {
-            MediaItem.fromUri(Uri.parse(filePath))
+            MediaItem.Builder().setUri(filePath).setMediaMetadata(pendingMediaMetadata ?: MediaMetadata.EMPTY).build()
         } else {
-            MediaItem.fromUri(Uri.fromFile(File(filePath)))
+            MediaItem.Builder().setUri(Uri.fromFile(File(filePath))).setMediaMetadata(pendingMediaMetadata ?: MediaMetadata.EMPTY).build()
         }
+        pendingMediaMetadata = null
         _uiState.value = _uiState.value.copy(isLoading = true, error = null)
         _player.setMediaItem(mediaItem)
         _player.prepare()
+        startPlaybackService()
         _player.play()
     }
 
@@ -297,6 +327,7 @@ class RadikoPlayer(
         pollJob?.cancel()
         pollJob = null
         pollScope.cancel()
+        stopPlaybackService()
         mediaSession.release()
         _player.release()
     }
@@ -307,6 +338,65 @@ class RadikoPlayer(
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .build()
         _player.setAudioAttributes(attrs, /* handleAudioFocus = */ true)
+    }
+
+    /**
+     * 再生開始時に PlaybackService へ MediaController を接続する。
+     *
+     * Media3 の MediaSessionService は、MediaController がサービスへ接続した際に
+     * onGetSession → addSession の流れでセッションを登録し、MediaNotificationManager が
+     * メディア通知の表示と startForeground() (mediaPlayback FGS) を自動処理する。
+     * 本アプリは共有 MediaSession を直接操作しているため、この接続が FGS 化と
+     * バックグラウンド再生継続のトリガーになる。
+     */
+    private fun startPlaybackService() {
+        if (PlaybackService.sharedMediaSession === null) return
+        // 二重接続防止 (release で切断してから再接続する)
+        if (serviceController != null) return
+        val token = SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java))
+        val future = MediaController.Builder(appContext, token).buildAsync()
+        serviceController = future
+        future.addListener(
+            {
+                val controller = runCatching { future.get() }.getOrNull()
+                if (controller != null) {
+                    Log.d(TAG, "PlaybackService に MediaController 接続完了")
+                } else {
+                    serviceController = null
+                }
+            },
+            controllerListenerExecutor
+        )
+    }
+
+    /**
+     * PlaybackService の MediaController を切断し、サービスを停止可能にする。
+     * 再生終了時に呼ぶ。FGS は Media3 が再生終了を検知して自ら降格・停止する。
+     */
+    fun stopPlaybackService() {
+        serviceController?.let { MediaController.releaseFuture(it) }
+        serviceController = null
+    }
+
+    /** PlaybackService 用の MediaController (メディア通知 + FGS のトリガー) */
+    private var serviceController: ListenableFuture<MediaController>? = null
+
+    /** MediaController 接続完了リスナーの実行用 (メインスレッドでUIと整合させる) */
+    private val controllerListenerExecutor: Executor = ContextCompat.getMainExecutor(appContext)
+
+    /**
+     * 次回 playMedialist/playLocalFile の MediaItem に設定するメタデータ。
+     * メディア通知に番組名・局名を表示するために使う。
+     * 再生開始前に呼び、次の play で消費される (一度使うとクリアされる)。
+     */
+    private var pendingMediaMetadata: MediaMetadata? = null
+
+    /** メディア通知に表示する番組情報を、次回再生の MediaItem に設定する */
+    fun setMediaMetadata(title: String, artist: String) {
+        pendingMediaMetadata = MediaMetadata.Builder()
+            .setTitle(title)
+            .setArtist(artist)
+            .build()
     }
 
     /** 表示用の duration を安全に計算する (C.TIME_UNSET など無効値は 0 に丸める)。 */
