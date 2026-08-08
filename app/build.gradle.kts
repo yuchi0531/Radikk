@@ -19,12 +19,8 @@ android {
     compileSdk = 36
 
     // リリース署名設定。
-    // 開発用リリース鍵 (keystore/radikk-release.jks):
-    //   - alias: radikk
-    //   - storepass / keypass: radikk-release-2026
-    //   - dname: CN=Radikk, OU=Dev, O=Radikk, L=Tokyo, ST=Tokyo, C=JP
-    //   - RSA 2048 / SHA256withRSA / 有効期間 10,000 日
-    // 鍵本体とパスワードは keystore.properties から読み込み、git にはコミットしない。
+    // 鍵本体 (keystore/radikk-release.jks) とパスワードは keystore.properties から読み込む。
+    // keystore/ と keystore.properties は .gitignore 済み。鍵・パスワードは絶対にコミットしない。
     signingConfigs {
         create("release") {
             if (keystoreProperties.containsKey("storeFile")) {

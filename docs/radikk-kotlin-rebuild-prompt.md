@@ -85,12 +85,12 @@ Flutter 製 radiko クライアント「Radikk」を、**ネイティブ Android
 
 3. **ID3 タグ付き ADTS AAC セグメントの処理**
    - radiko の `.aac` セグメントは「ID3v2 タグ + ADTS」で、Content-Type が `application/octet-stream`
-   - Media3 の HLS パーサーが `#EXT-X-STREAM-INF` の `CODECS="mp4a.40.5"` から `audio/mp4a-latm` と判断して ADTS 抽出する
+   - medialist 直接指定では CODECS 属性が無いため mime 判定は行われず、`DefaultHlsExtractorFactory` の `AdtsExtractor.sniff()` が ID3v2 ヘッダー（10バイト + synchsafe サイズ）を読み飛ばして先頭 8KB 以内の連続 ADTS フレームで検出する。セグメント URL が `.aac` 終端なので `FileTypes.inferFileTypeFromUri` により優先的に試される
    - **もし Source Error が再発する場合**のフォールバックとして、以下のいずれか：
      a. **セグメントをアプリ側で取得して ID3 タグを除去した ADTS を MediaItem に流す**（`DataSource` をカスタム実装して ID3 をスキップするか、`TsExtractor` ではなく `AdtsExtractor` を明示指定）
      b. **`DefaultHlsExtractorFactory` に `AdtsExtractor` を追加登録**して、`application/octet-stream` セグメントを ADTS として確実に抽出させる
      c. 各セグメントを個別に `AudioItem` として順次再生（ID3 除去済みの生 ADTS を Media3 に流す）
-   - まずは「medialist 直接 + setDefaultRequestProperties + CODECS 情報で ADTS 抽出」で試し、ダメなら (b) の extractor 明示指定にフォールバック
+   - まずは「medialist 直接 + setDefaultRequestProperties + AdtsExtractor のスニッフィングによる ADTS 抽出」で試し、ダメなら (b) の extractor 明示指定にフォールバック
 
 4. **デバッグログの充実**:
    - `Player.Listener` の `onPlayerError` で `PlaybackException.errorCode` と `cause` を必ずログ出力
@@ -120,7 +120,7 @@ Flutter 製 radiko クライアント「Radikk」を、**ネイティブ Android
   │   └── StreamUrlResolver.kt  (m3u8→medialist URL 抽出)
   ├── ui/
   │   ├── theme/        (Material3 テーマ、Monet ダイナミックカラー)
-  │   ├── screen/       (LiveScreen, TimefreeScreen, ProgramGuideScreen, SettingsScreen)
+  │   ├── screen/       (Home, TimefreeScreen, ProgramGuideScreen, SettingsScreen)
   │   └── component/
   └── util/             (RadikoTimeUtil: JST 14桁変換、jstOffset 等)
   ```
