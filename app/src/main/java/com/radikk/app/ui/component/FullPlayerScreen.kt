@@ -43,8 +43,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.radikk.app.ui.AppViewModel
+import com.radikk.app.util.RadikoTimeUtil
 import com.radikk.app.util.htmlToPlainText
-import java.util.Locale
 
 /**
  * 全画面プレイヤー。ミニプレイヤーのタップで表示される。
@@ -216,11 +216,11 @@ fun FullPlayerScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        text = formatTime(displayPositionMs),
+                        text = RadikoTimeUtil.formatDuration(displayPositionMs),
                         style = MaterialTheme.typography.labelSmall,
                     )
                     Text(
-                        text = formatTime(durationMs),
+                        text = RadikoTimeUtil.formatDuration(durationMs),
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
@@ -254,15 +254,3 @@ fun FullPlayerScreen(
     }
 }
 
-private fun formatTime(ms: Long): String {
-    if (ms < 0) return "0:00"
-    val totalSeconds = ms / 1000
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    val seconds = totalSeconds % 60
-    return if (hours > 0) {
-        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
-    } else {
-        String.format(Locale.US, "%d:%02d", minutes, seconds)
-    }
-}

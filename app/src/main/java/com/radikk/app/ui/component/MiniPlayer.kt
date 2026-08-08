@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.radikk.app.ui.AppViewModel
+import com.radikk.app.util.RadikoTimeUtil
 
 /**
  * ミニプレイヤー。画面下部に固定表示。
@@ -79,8 +80,28 @@ fun MiniPlayer(
                 valueRange = 0f..maxValue,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(6.dp),
+                    // 既定の高さを維持する (thumb が潰れない)。height(6.dp) 指定は Slider を
+                    // 押しつぶして見た目・操作性を悪化させるため、タップ領域を確保する。
+                    .height(20.dp),
             )
+            // 経過 / 総時間 (タイムフリー・ダウンロード再生のみ表示)
+            if (durationMs > 0) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = RadikoTimeUtil.formatDuration(displayPositionMs),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = RadikoTimeUtil.formatDuration(durationMs),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

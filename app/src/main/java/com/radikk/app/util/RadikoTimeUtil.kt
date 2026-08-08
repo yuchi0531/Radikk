@@ -53,6 +53,20 @@ object RadikoTimeUtil {
     /** Instant を JST の M/d(EEE) に変換する。 */
     fun formatDate(instant: Instant): String = dateFormatter.format(instant.atZone(JST))
 
+    /** 再生位置の長さを mm:ss または h:mm:ss に変換する (シークバーの経過/総時間表示用)。 */
+    fun formatDuration(ms: Long): String {
+        if (ms < 0) return "0:00"
+        val totalSeconds = ms / 1000
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return if (hours > 0) {
+            String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            String.format(Locale.US, "%d:%02d", minutes, seconds)
+        }
+    }
+
     /**
      * JST 5:00 起点で、指定 Instant が属する「放送日」の開始時刻 (JST 5:00) を返す。
      * 例: 2026-08-07 03:00 JST → 2026-08-06 05:00 JST (前日分)

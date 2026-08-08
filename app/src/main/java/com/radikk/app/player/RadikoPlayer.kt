@@ -16,7 +16,10 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.ts.AdtsExtractor
 import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionToken
@@ -48,7 +51,10 @@ import java.io.File
  *    - setDefaultRequestProperties は HLS の全リクエストに適用される
  * 3. **ID3 タグ付き ADTS AAC セグメントの処理**
  *    - radiko の .aac セグメントは「ID3v2 タグ + ADTS」で Content-Type は application/octet-stream
- *    - Media3 の HLS パーサーは CODECS="mp4a.40.5" から audio/mp4a-latm と判断して ADTS 抽出する
+ *    - medialist 直接指定では CODECS 属性が無いため、mime 判定ではなく `DefaultHlsExtractorFactory` の
+ *      `AdtsExtractor.sniff()` が ID3 ヘッダーを読み飛ばして先頭 8KB 内の連続 ADTS フレームで検出する。
+ *      セグメント URL が `.aac` 終端なので `inferFileTypeFromUri` により最優先で試される
+ *    - 再生中も `AdtsReader` が各セグメントの ID3 をメタデータとして消費し、音声トラックには ADTS のみ出力する
  *    - Source Error 再発時は AdtsExtractor を明示登録するフォールバックを用意
  *
  * UnstableApi の opt-in は build.gradle.kts の compilerOptions (-opt-in) で解決している。
@@ -81,7 +87,22 @@ class RadikoPlayer(
         class Unknown(details: String) : PlayerError("再生エラー ($details)")
     }
 
+    /**
+     * ローカル .aac (ADTS) のシークを有効にするための Extractor フラグ。
+     *
+     * radiko のダウンロードファイルは複数の ADTS セグメントを単一の .aac に連結した
+     * ストリームで、ファイルヘッダーに duration 情報が無い。Media3 の AdtsExtractor は
+     * デフォルトでは UnseekableSeekMap を出力するため、ExoPlayer.seekTo しても位置 0 に
+     * 戻ってしまいシークバーが機能しない (実機検証済み)。
+     * FLAG_ENABLE_CONSTANT_BITRATE_SEEKING により「平均フレームサイズから算出した
+     * 固定ビットレート」ベースのシークマップを出力し、シーク可能にする。
+     * (ダウンロードは同一エンコード設定のセグメント連結なので CBR 近似でシーク精度は十分)
+     */
+    private val defaultExtractorsFactory: DefaultExtractorsFactory = DefaultExtractorsFactory()
+        .setAdtsExtractorFlags(AdtsExtractor.FLAG_ENABLE_CONSTANT_BITRATE_SEEKING)
+
     private val _player = ExoPlayer.Builder(context)
+        .setMediaSourceFactory(DefaultMediaSourceFactory(context, defaultExtractorsFactory))
         .build()
 
     val player: ExoPlayer = _player

@@ -857,10 +857,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         timefreeContext = null
-        // ローカルファイルは ExoPlayer が実ファイルから duration を読むため上書きは不要
-        // (effectiveDuration がローカル再生時は実ファイルの duration を優先する)
+        // ローカル .aac (ADTS) には duration 情報が無いため ExoPlayer の duration が C.TIME_UNSET になる。
+        // シークバー表示用に番組長 (to - ft) を durationOverrideMs として渡す (RadikoPlayer は
+        // 実ファイルの duration が読めない場合にこの値でシークバー上限を表示する)。
+        val durationMs = (entry.toEpochMillis - entry.ftEpochMillis).coerceAtLeast(0L)
         radikoPlayer.setMediaMetadata(entry.programTitle, entry.stationName)
-        radikoPlayer.playLocalFile(entry.filePath)
+        radikoPlayer.playLocalFile(entry.filePath, durationOverrideMs = durationMs)
         _nowPlaying.value = NowPlaying(
             stationId = entry.stationId,
             stationName = entry.stationName,
