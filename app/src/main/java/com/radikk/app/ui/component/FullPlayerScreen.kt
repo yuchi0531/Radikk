@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
@@ -82,7 +84,6 @@ fun FullPlayerScreen(
                 .fillMaxSize()
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
         ) {
             // 閉じるボタン (左上)
             Row(
@@ -99,84 +100,92 @@ fun FullPlayerScreen(
 
             Spacer(Modifier.height(8.dp))
 
-            // 番組ロゴ (大きく表示)
-            val imageUrl = nowPlaying.programImgUrl ?: nowPlaying.stationLogoUrl
-            if (imageUrl != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center,
+            // 番組ロゴ → 局名 → 番組名 → ラベル → 出演者 → 説明文 の中央セクション。
+            // 長い番組詳細で画面から溢れる場合はスクロール可能、短い場合は中央寄せ。
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    AsyncImage(
-                        model = imageUrl,
-                        contentDescription = nowPlaying.title,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        contentScale = ContentScale.Fit,
+                    // 番組ロゴ (大きく表示)
+                    val imageUrl = nowPlaying.programImgUrl ?: nowPlaying.stationLogoUrl
+                    if (imageUrl != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            AsyncImage(
+                                model = imageUrl,
+                                contentDescription = nowPlaying.title,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(16.dp),
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+
+                    // 局名
+                    Text(
+                        text = nowPlaying.stationName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
+
+                    Spacer(Modifier.height(4.dp))
+
+                    // 番組名
+                    Text(
+                        text = nowPlaying.title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = TextAlign.Center,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
+                    // ラベル: ライブ / タイムフリー
+                    Text(
+                        text = if (nowPlaying.isTimefree) "タイムフリー" else "ライブ放送",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+
+                    // 番組詳細 (パーソナリティ・説明)。ある場合のみ表示
+                    if (!nowPlaying.performer.isNullOrBlank() && nowPlaying.performer != "null") {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = "出演: ${nowPlaying.performer}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (!nowPlaying.description.isNullOrBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = htmlToPlainText(nowPlaying.description),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
                 }
             }
-
-            Spacer(Modifier.height(24.dp))
-
-            // 局名
-            Text(
-                text = nowPlaying.stationName,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            // 番組名
-            Text(
-                text = nowPlaying.title,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold,
-                textAlign = TextAlign.Center,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
-
-            Spacer(Modifier.height(16.dp))
-
-            // ラベル: ライブ / タイムフリー
-            Text(
-                text = if (nowPlaying.isTimefree) "タイムフリー" else "ライブ放送",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-
-            // 番組詳細 (パーソナリティ・説明)。ある場合のみ表示
-            if (!nowPlaying.performer.isNullOrBlank() && nowPlaying.performer != "null") {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "出演: ${nowPlaying.performer}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (!nowPlaying.description.isNullOrBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = htmlToPlainText(nowPlaying.description),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
-                    maxLines = 6,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            Spacer(Modifier.weight(1f))
 
             // シークバー (タイムフリーのみ表示)
             if (nowPlaying.isTimefree) {
