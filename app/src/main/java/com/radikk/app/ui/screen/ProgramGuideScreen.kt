@@ -567,6 +567,9 @@ private fun StationColumn(
 /**
  * 番組 1 セル。放送時間に応じた高さで表示し、放送中をハイライトする。
  * タップで再生、長押しで通知設定。通知設定済みならベルアイコンを表示する。
+ *
+ * 5 分番組などの短いセルは放送時間どおりだと高さが数 dp に潰れてしまうため、
+ * 最小高さを設けてタイトルが読めるようにする。短いセルではタイトル行数も減らす。
  */
 @Composable
 private fun ProgramCell(
@@ -578,9 +581,16 @@ private fun ProgramCell(
 ) {
     val isOnAir = program.isOnAir()
 
+    // 放送時間に応じた高さ (最低でもタイトル 1 行が収まる高さを確保する)
+    val minCellHeightDp = 28.dp
+    val cellHeightDp = (durationHours * HOUR_HEIGHT_DP.value).dp.coerceAtLeast(minCellHeightDp)
+
+    // 高さが小さいセルはタイトル行を減らす (~40dp で時間行 + タイトル 2 行が収まる閾値)
+    val titleMaxLines = if (durationHours * HOUR_HEIGHT_DP.value < 40f) 1 else 3
+
     Box(
         modifier = Modifier
-            .height((durationHours * HOUR_HEIGHT_DP.value).dp)
+            .height(cellHeightDp)
             .fillMaxWidth()
             .background(
                 color = if (isOnAir) {
@@ -596,30 +606,33 @@ private fun ProgramCell(
             .padding(4.dp),
     ) {
         Column {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "${RadikoTimeUtil.formatTime(program.ft)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                // 通知設定済みならベルアイコン
-                if (isReminderSet) {
-                    Icon(
-                        imageVector = Icons.Filled.Notifications,
-                        contentDescription = "通知設定済み",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(14.dp),
+            // 高さが足りないセルでは時間行を省略し、タイトル 1 行を優先する
+            if (cellHeightDp >= 40.dp) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${RadikoTimeUtil.formatTime(program.ft)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // 通知設定済みならベルアイコン
+                    if (isReminderSet) {
+                        Icon(
+                            imageVector = Icons.Filled.Notifications,
+                            contentDescription = "通知設定済み",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
                 }
             }
             Text(
                 text = program.title,
                 style = MaterialTheme.typography.bodySmall,
-                maxLines = 3,
+                maxLines = titleMaxLines,
                 overflow = TextOverflow.Ellipsis,
             )
         }

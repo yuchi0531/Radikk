@@ -326,7 +326,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 指定日付の全局番組表を返す。永続キャッシュに「今日分」がなければ取得して保存する。
+     * 指定日付の全局番組表を返す。永続キャッシュがあればネットワーク取得せずに返す。
      * EPG 番組表で使う (キャッシュ優先で高速化)。
      */
     suspend fun getProgramsForStationsWithCache(
@@ -347,7 +347,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (coversAll) return cached
         }
 
-        // キャッシュなし → 全局並列取得して保存
+        // 今日以外: 一度でも取得記録があればキャッシュを確認する。
+        // 過去日は番組表が変わらないため安全に再利用でき、明日以降も初回取得後にキャッシュされる。
+        // 今日と同様、全局カバーの場合のみ使用する (部分的な場合は全取得して補う)。
+        if (apiDate != today && programCache.lastFetchedAt(areaId, apiDate) != null) {
+            val cached = programCache.getPrograms(areaId, apiDate)
+            val coversAll = stations.all { cached.containsKey(it.id) }
+            if (coversAll) return cached
+        }
+
+        // キャッシュなし → 全局並列取得して保存 (今日以外も保存し、次回以降の表示を高速化する)
         val programsByStation = coroutineScope {
             stations.map { station ->
                 async {
@@ -359,9 +368,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.associate { it.await() }
         }
-        if (apiDate == today) {
-            programCache.putPrograms(areaId, apiDate, programsByStation)
-        }
+        programCache.putPrograms(areaId, apiDate, programsByStation)
         return programsByStation
     }
 
