@@ -64,10 +64,13 @@ fun MiniPlayer(
                 .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
             // 再生位置のシークバー。ドラッグで直接シークできる。
-            // ライブ (duration <= 0) は disabled トラックを表示し、タイムフリー/ダウンロード再生のみ進捗を示す。
+            // シーク可否は NowPlaying.isTimefree で判定する: ライブ (isTimefree = false) は
+            // disabled トラックを表示し、タイムフリー/ダウンロード再生のみシーク可能。
+            // (durationMs > 0 判定はライブ HLS が推定 duration を返すため使わない)
             // ドラッグ中のシーク位置。null ならポーリング値 (playerState.positionMs) を表示する。
             // ポーリング更新と競合しないよう onValueChangeFinished でのみ seekTo する。
             // 番組が変わったらリセットする (key = 局+番組開始時刻)。
+            val seekable = nowPlaying.isTimefree
             var dragPositionMs by remember(nowPlaying.stationId, nowPlaying.title) {
                 mutableStateOf<Long?>(null)
             }
@@ -81,7 +84,7 @@ fun MiniPlayer(
                     dragPositionMs?.let { viewModel.seekTo(it) }
                     dragPositionMs = null
                 },
-                enabled = durationMs > 0,
+                enabled = seekable,
                 valueRange = 0f..maxValue,
                 // Monet 対応: シークバーはテーマの primary 色で、ダークでは明るく、ライトでは
                 // 彩度の高いアクセントとして両モードで視認性を確保する。
@@ -100,7 +103,7 @@ fun MiniPlayer(
                     .height(20.dp),
             )
             // 経過 / 総時間 (タイムフリー・ダウンロード再生のみ表示)
-            if (durationMs > 0) {
+            if (seekable) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
