@@ -33,8 +33,8 @@ import com.radikk.app.util.RadikoTimeUtil
 
 /**
  * ミニプレイヤー。画面下部に固定表示。
- * 再生/停止ボタン + 下部 (局名・番組名) のタップでフルプレイヤー。
- * 上部のシークバーはドラッグで直接シークできる (フルプレイヤーと同じ
+ * 上部 (局名・番組名 + 再生/停止ボタン) のタップでフルプレイヤー。
+ * 下部のシークバーはドラッグで直接シークできる (フルプレイヤーと同じ
  * onValueChangeFinished で seekTo する方式。タップではフルプレイヤーを開かない)。
  */
 @Composable
@@ -61,9 +61,55 @@ fun MiniPlayer(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
         ) {
-            // 再生位置のシークバー。ドラッグで直接シークできる。
+            // 上部: 局名・番組名 + 再生/停止ボタン。タップでフルプレイヤーを開く。
+            // (シークバー領域はドラッグ専用のため、クリックはこの Row のみ)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClick)
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        text = nowPlaying.stationName,
+                        style = MaterialTheme.typography.labelLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = nowPlaying.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        if (isPlaying) viewModel.pause() else viewModel.play()
+                    },
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "一時停止" else "再生",
+                    )
+                }
+                IconButton(
+                    onClick = { viewModel.stop() },
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "停止",
+                    )
+                }
+            }
+            // 下部: 再生位置のシークバー。ドラッグで直接シークできる。
             // シーク可否は NowPlaying.isTimefree で判定する: ライブ (isTimefree = false) は
             // disabled トラックを表示し、タイムフリー/ダウンロード再生のみシーク可能。
             // (durationMs > 0 判定はライブ HLS が推定 duration を返すため使わない)
@@ -117,50 +163,6 @@ fun MiniPlayer(
                         text = RadikoTimeUtil.formatDuration(durationMs),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onClick)
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(
-                        text = nowPlaying.stationName,
-                        style = MaterialTheme.typography.labelLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = nowPlaying.title,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                IconButton(
-                    onClick = {
-                        if (isPlaying) viewModel.pause() else viewModel.play()
-                    },
-                ) {
-                    Icon(
-                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (isPlaying) "一時停止" else "再生",
-                    )
-                }
-                IconButton(
-                    onClick = { viewModel.stop() },
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = "停止",
                     )
                 }
             }
