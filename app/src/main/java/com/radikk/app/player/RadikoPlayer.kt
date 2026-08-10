@@ -102,25 +102,20 @@ class RadikoPlayer(
     private val defaultExtractorsFactory: DefaultExtractorsFactory = DefaultExtractorsFactory()
         .setAdtsExtractorFlags(AdtsExtractor.FLAG_ENABLE_CONSTANT_BITRATE_SEEKING)
 
-    private val _player = ExoPlayer.Builder(context)
-        .setMediaSourceFactory(DefaultMediaSourceFactory(context, defaultExtractorsFactory))
-        .build()
+    private var _player: ExoPlayer
 
-    val player: ExoPlayer = _player
-
-    init {
-        // スワイプアウェイ後にバックグラウンド再生 (FGS) が残ったままアプリを再起動すると、
-        // 前回の MediaSession が生きている (PlaybackService.sharedMediaSession が非 null)。
-        // このまま新しい MediaSession を生成すると Media3 の静的 SESSION_ID_TO_SESSION_MAP で
-        // ID 衝突 (Session ID must be unique) が起きるため、生成前に旧セッションをクリーンに
-        // 停止する。再起動 = まっさらな状態 (バックグラウンド再生は停止) という仕様にする。
-        PlaybackService.stopBackgroundPlayback(appContext)
-    }
+    val player: ExoPlayer get() = _player
 
     /** MediaSession (バックグラウンド再生・メディア通知用)。ID は衝突回避のため一意にする */
-    val mediaSession: MediaSession = MediaSession.Builder(context, _player)
-        .setId("radikk-" + UUID.randomUUID())
-        .build()
+    // コンストラクタの init ブロックで割り当てられる (既存セッション引き継ぎ or 新規生成)。
+    var mediaSession: MediaSession
+
+    /**
+     * 既存のバックグラウンド再生セッションを引き継いだ場合は true (再起動時)。
+     * 引き継ぎ時は player/MediaSession を新規作成せず、既存のものを再利用する。
+     * このフラグは生成経路の記録と、release まわりの後片付け判定に使う。
+     */
+    private var adopted = false
 
     /** 現在の再生状態 (UI 連携用) */
     data class PlayerUiState(
@@ -175,6 +170,34 @@ class RadikoPlayer(
     private var released = false
 
     init {
+        // 再起動時のセッション引き継ぎを判定する。
+        // スワイプアウェイ後にバックグラウンド再生 (FGS) が残ったままアプリを再起動すると、
+        // PlaybackService.sharedMediaSession に前回の MediaSession が生きている。このまま新しい
+        // MediaSession を生成すると Media3 の静的 SESSION_ID_TO_SESSION_MAP で ID 衝突
+        // (Session ID must be unique) が起きる。そこで既存セッションの player をそのまま
+        // 引き継ぐことで、再起動してもバックグラウンド再生を止めずに継続できる。
+        val existing = PlaybackService.sharedMediaSession
+        val existingPlayer = existing?.player
+        val adoptable = existing != null &&
+            existingPlayer is ExoPlayer &&
+            runCatching { existingPlayer.playbackState != Player.STATE_IDLE }.getOrDefault(false)
+        if (adoptable) {
+            // 既存のバックグラウンド再生セッションを引き継ぐ (player/MediaSession を再利用)
+            _player = existingPlayer
+            mediaSession = existing
+            adopted = true
+            Log.i(TAG, "既存のバックグラウンド再生セッションを引き継ぎました (継続再生)")
+        } else {
+            _player = ExoPlayer.Builder(context)
+                .setMediaSourceFactory(DefaultMediaSourceFactory(context, defaultExtractorsFactory))
+                .build()
+            mediaSession = MediaSession.Builder(context, _player)
+                .setId("radikk-" + UUID.randomUUID())
+                .build()
+            adopted = false
+            Log.i(TAG, "新しい再生セッションを生成しました")
+        }
+
         // メディア通知タップで MainActivity に戻るようにセッションアクティビティを設定する
         val sessionActivity = PendingIntent.getActivity(
             appContext,
@@ -186,6 +209,9 @@ class RadikoPlayer(
         )
         mediaSession.setSessionActivity(sessionActivity)
 
+        // リスナーを追加する。既存セッションを引き継いだ場合も、この新インスタンスの uiState を
+        // 同期するため必ず新規リスナーを追加する (引き継いだ player には前インスタンスが
+        // 追加済みのリスナーが残る。ExoPlayer は複数リスナーをサポートするため両方が動く)。
         _player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 updateState()
@@ -205,6 +231,12 @@ class RadikoPlayer(
             }
         })
         applyAudioAttributes()
+
+        // 引き継いだセッションは既に再生中の場合がある。リスナーは今後発生する状態変化に
+        // 反応するため、現時点の再生状態を即座に uiState へ反映して UI を同期させる。
+        if (adopted) {
+            updateState()
+        }
     }
 
     /** 認証情報を設定する。ストリーム再生前に必ず呼ぶ。 */

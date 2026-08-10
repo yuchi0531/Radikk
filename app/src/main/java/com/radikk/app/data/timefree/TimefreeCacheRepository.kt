@@ -74,6 +74,7 @@ class TimefreeCacheRepository(private val context: Context) {
      * セマンティクスを保つため、currentCachedPrograms でフィルタする)。
      */
     private val memoryCache = ConcurrentHashMap<String, List<CachedTimefreeProgram>>()
+    @Volatile
     private var memoryLoaded = false
 
     /**

@@ -182,13 +182,11 @@ class AuthRepository(
                 }
                 val actualAreaId = parts[0].trim()
                 val areaName = parts[1].trim()
-                // サーバーがリクエストと異なるエリアを返した場合は地域外として扱う。
-                // 例: 東京都 (JP13) を指定したのに大阪府 (JP27) が返ってきた → 位置情報が
-                // 誤っているか地域外。エコーされたエリアを黙って採用すると、ユーザーが
-                // 選んだエリアと不一致のセッションがキャッシュされ、getSession が毎回
-                // キャッシュミスして再認証スラッシングを起こすため、明示的に失敗させる。
+                // サーバーがリクエストと異なるエリアを返しても、全県対応のため失敗させない。
+                // (auth2 のエリア検証は行わず、どのエリアでも要求エリアを維持する)
+                // ログだけ残して要求エリア (areaId) をそのまま使う。
                 if (actualAreaId != areaId) {
-                    throw AuthError.AreaOut()
+                    Log.w(TAG, "auth2 エリア不一致: 要求=$areaId 応答=$actualAreaId (要求エリアを維持)")
                 }
                 val expiry = Instant.now().plusMillis(TOKEN_TTL_MS)
                 return AuthSession(

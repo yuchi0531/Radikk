@@ -296,8 +296,8 @@ class DownloadManager(
      * 1 ウィンドウ分の medialist を取得する。
      * 401 (トークン失効) の場合は [freshTokenProvider] で新トークンを取得して
      * [tokenRef] に反映した上で、そのウィンドウだけ 1 回再試行する。
-     * 再試行が無い / 失敗した場合は元の例外を投げる。
-     * 5xx (500/502/503/504) は短い間隔でリトライする。
+     * 5xx (500/502/503/504) は [fetchSegmentBytes] と同様に短い間隔で数回リトライする。
+     * 再試行が無い / 失敗した場合は最後のエラーをそのまま投げる。
      * @return medialist URL と body のペア (URL 相対のセグメント解決に medialist URL が必要なため)
      */
     private suspend fun fetchWindowBody(
@@ -308,19 +308,31 @@ class DownloadManager(
         tokenRef: TokenRef,
         freshTokenProvider: (suspend () -> String?)?,
     ): Pair<String, String> {
-        try {
-            val url = resolver.resolveTimefreeMedialistUrl(stationId, tokenRef.token, ft, to, seekOffsetMs = seekOffsetMs)
-            return url to apiClient.getString(url, tokenRef.headers())
-        } catch (e: Exception) {
-            if (isAuth401(e) && freshTokenProvider != null) {
-                val newToken = freshTokenProvider() ?: throw e
-                // 新しいトークンを共有 TokenRef に反映して、以後の全取得で使う
-                tokenRef.token = newToken
-                val url = resolver.resolveTimefreeMedialistUrl(stationId, newToken, ft, to, seekOffsetMs = seekOffsetMs)
+        var lastError: Exception? = null
+        var attempts = 0
+        // 5xx は一時的なサーバー障害の可能性が高いため、短い間隔で数回リトライする
+        while (attempts <= SEGMENT_5XX_RETRY_COUNT) {
+            attempts++
+            try {
+                val url = resolver.resolveTimefreeMedialistUrl(stationId, tokenRef.token, ft, to, seekOffsetMs = seekOffsetMs)
                 return url to apiClient.getString(url, tokenRef.headers())
+            } catch (e: Exception) {
+                if (isAuth401(e) && freshTokenProvider != null) {
+                    val newToken = freshTokenProvider() ?: throw e
+                    // 新しいトークンを共有 TokenRef に反映して、以後の全取得で使う
+                    tokenRef.token = newToken
+                    val url = resolver.resolveTimefreeMedialistUrl(stationId, newToken, ft, to, seekOffsetMs = seekOffsetMs)
+                    return url to apiClient.getString(url, tokenRef.headers())
+                }
+                if (isRetryable5xx(e) && attempts <= SEGMENT_5XX_RETRY_COUNT) {
+                    lastError = e
+                    delay(SEGMENT_5XX_RETRY_DELAY_MS)
+                    continue
+                }
+                throw e
             }
-            throw e
         }
+        throw lastError ?: IOException("メディアリストの取得に失敗しました")
     }
 
     /**
