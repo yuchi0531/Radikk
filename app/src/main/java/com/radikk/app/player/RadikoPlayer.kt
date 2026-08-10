@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.UUID
 
 /**
  * radiko 再生エンジン (Media3/ExoPlayer ラッパー)。
@@ -107,8 +108,19 @@ class RadikoPlayer(
 
     val player: ExoPlayer = _player
 
-    /** MediaSession (バックグラウンド再生・メディア通知用) */
-    val mediaSession: MediaSession = MediaSession.Builder(context, _player).build()
+    init {
+        // スワイプアウェイ後にバックグラウンド再生 (FGS) が残ったままアプリを再起動すると、
+        // 前回の MediaSession が生きている (PlaybackService.sharedMediaSession が非 null)。
+        // このまま新しい MediaSession を生成すると Media3 の静的 SESSION_ID_TO_SESSION_MAP で
+        // ID 衝突 (Session ID must be unique) が起きるため、生成前に旧セッションをクリーンに
+        // 停止する。再起動 = まっさらな状態 (バックグラウンド再生は停止) という仕様にする。
+        PlaybackService.stopBackgroundPlayback(appContext)
+    }
+
+    /** MediaSession (バックグラウンド再生・メディア通知用)。ID は衝突回避のため一意にする */
+    val mediaSession: MediaSession = MediaSession.Builder(context, _player)
+        .setId("radikk-" + UUID.randomUUID())
+        .build()
 
     /** 現在の再生状態 (UI 連携用) */
     data class PlayerUiState(
@@ -509,13 +521,24 @@ class RadikoPlayer(
                             // READY 中は ExoPlayer の実位置にアンカーを再同期する。
                             // シーク直後は BUFFERING (READY ではない) になるため、
                             // seekTo で設定したアンカーは壊さない (steady-state でのみ動作)。
+                            //
+                            // ただしウィンドウ先頭再生 (windowBasePositionMs == 0) では
+                            // ExoPlayer の currentPosition は HLS スライディングウィンドウの
+                            // 切替で非単調にリセットされうる (実機検証: 0:00↔0:04 の往復表示)。
+                            // そのため再同期は URL ベースシーク後 (windowBasePositionMs > 0:
+                            // currentPosition が seek 位置からの単調なウィンドウ相対位置になる) に限定し、
+                            // さらに論理位置が後退しないよう前回表示位置 - 許容誤差で下限クランプする。
                             if (!nativePosition &&
+                                windowBasePositionMs > 0L &&
                                 _player.playbackState == Player.STATE_READY &&
                                 _player.currentPosition > 0
                             ) {
                                 // URL ベースシークではウィンドウ先頭 = 論理位置 (windowBasePositionMs) のため加算する
-                                playAnchorPositionMs = windowBasePositionMs + _player.currentPosition
-                                playAnchorElapsed = SystemClock.elapsedRealtime()
+                                val reconciled = windowBasePositionMs + _player.currentPosition
+                                if (reconciled >= currentLogicalPosition() - 2_000L) {
+                                    playAnchorPositionMs = reconciled
+                                    playAnchorElapsed = SystemClock.elapsedRealtime()
+                                }
                             }
                             _uiState.value = _uiState.value.copy(
                                 positionMs = currentLogicalPosition(),
