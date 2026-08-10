@@ -39,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +52,7 @@ import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
 import com.radikk.app.data.timefree.CachedTimefreeProgram
 import com.radikk.app.ui.AppViewModel
+import com.radikk.app.ui.component.ConfirmDeleteDialog
 import com.radikk.app.ui.component.StationCard
 import com.radikk.app.util.RadikoTimeUtil
 import kotlinx.coroutines.Job
@@ -82,54 +84,61 @@ fun TimefreeScreen(
     val downloadProgress by viewModel.downloadProgress.collectAsState()
     val timefreePreloading by viewModel.timefreePreloading.collectAsState()
     val timefreePreloadProgress by viewModel.timefreePreloadProgress.collectAsState()
-    var selectedStation by remember { mutableStateOf<Station?>(null) }
-    var selectedDayOffset by remember { mutableStateOf(0) }
+    // 選択中の局は rememberSaveable で保持する (回転で失われないように stationId のみ保存し、
+    // 局一覧から再導出する。Station 自体は複雑な data class のため saveable にできない)
+    var selectedStationId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedDayOffset by rememberSaveable { mutableStateOf(0) }
     var programs by remember { mutableStateOf<List<Program>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
+
+    // 選択中のエリアの局一覧 (stationState から)
+    val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
+    // stationId → Station を復元する (エリア変更で消えた局は null)
+    val selectedStation = selectedStationId?.let { id -> stations.firstOrNull { it.id == id } }
 
     // 局選択中は戻るボタンで局一覧（検索モード）へ戻す。
     // 局一覧では MainActivity 側の BackHandler がホーム（ライブ）タブへ戻る。
     BackHandler(enabled = selectedStation != null) {
-        selectedStation = null
+        selectedStationId = null
     }
 
     // 検索 / 局から選ぶ / ダウンロード モード
-    var mode by remember { mutableStateOf(TimefreeMode.SEARCH) }
+    var mode by rememberSaveable { mutableStateOf(TimefreeMode.SEARCH) }
 
     // ホームの「すべて見る」→ ダウンロードタブを開く (フラグ消費後にリセット)
     LaunchedEffect(openDownloads) {
         if (openDownloads) {
             mode = TimefreeMode.DOWNLOADS
-            selectedStation = null
+            selectedStationId = null
             onDownloadsOpened()
         }
     }
 
     // 検索状態
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<CachedTimefreeProgram>>(emptyList()) }
     var searchLoading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var searchJob by remember { mutableStateOf<Job?>(null) }
 
     // 日付フィルター (0=今日, 1=昨日, 3=〜3日以内, 7=すべて)。検索結果の絞り込みに使う。
-    var dateFilterDays by remember { mutableStateOf(7) }
-
-    // 選択中のエリアの局一覧
-    val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
+    var dateFilterDays by rememberSaveable { mutableStateOf(7) }
 
     // ダウンロード済み番組のキー集合 (stationId, ftEpochMillis)。
     // downloads の変更で再計算されるため、各行のダウンロード状態が反応的に更新される。
     val downloadKeys = downloads.map { it.stationId to it.ftEpochMillis }.toSet()
 
     // ダウンロード一覧の並び替え
-    var downloadSort by remember { mutableStateOf(DownloadSort.BY_AIR_TIME) }
+    var downloadSort by rememberSaveable { mutableStateOf(DownloadSort.BY_AIR_TIME) }
+
+    // 削除確認ダイアログの対象 (null なら非表示)
+    var pendingDelete by remember { mutableStateOf<DownloadedProgram?>(null) }
 
     // エリア変更後、選択中の局が現在のエリアに存在しない場合は一覧へ戻す
     LaunchedEffect(stations.map { it.id }.joinToString(",")) {
         val current = selectedStation
         if (current != null && stations.none { it.id == current.id }) {
-            selectedStation = null
+            selectedStationId = null
         }
     }
 
@@ -139,7 +148,14 @@ fun TimefreeScreen(
     // 検索実行 (デバウンス付き: 300ms)
     // stations をキーに含める (エリア変更時に古いエリアの検索結果が残らないようにする)
     // dateFilterDays をキーに含める (チップ変更時に結果を再フィルタする)
-    LaunchedEffect(searchQuery, selectedStation, dateFilterDays, stations.map { it.id }.joinToString(",")) {
+    // timefreePreloading をキーに含める (プリロード完了後に結果を自動更新する)
+    LaunchedEffect(
+        searchQuery,
+        selectedStation,
+        dateFilterDays,
+        timefreePreloading,
+        stations.map { it.id }.joinToString(","),
+    ) {
         if (selectedStation != null) return@LaunchedEffect // 局選択モードでは検索しない
         searchJob?.cancel()
         searchJob = scope.launch {
@@ -275,8 +291,14 @@ fun TimefreeScreen(
                                                     .padding(32.dp),
                                                 contentAlignment = Alignment.Center,
                                             ) {
+                                                // プリロード完了前は「準備中」を表示し、
+                                                // 完了後の空検索は本当に該当なしと区別する
                                                 Text(
-                                                    "該当する番組がありません",
+                                                    if (timefreePreloading) {
+                                                        "検索中… データ準備中"
+                                                    } else {
+                                                        "該当する番組がありません"
+                                                    },
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 )
                                             }
@@ -331,7 +353,7 @@ fun TimefreeScreen(
                                         items(stations, key = { it.id }) { station ->
                                             StationCard(
                                                 station = station,
-                                                onClick = { selectedStation = station },
+                                                onClick = { selectedStationId = station.id },
                                             )
                                         }
                                     }
@@ -385,7 +407,8 @@ fun TimefreeScreen(
                                                     entry = entry,
                                                     onClick = { viewModel.playDownloaded(entry) },
                                                     onRemove = {
-                                                        viewModel.deleteDownload(entry.stationId, entry.ftEpochMillis)
+                                                        // 削除は確認ダイアログを経由する (7日経過後は再DL不可)
+                                                        pendingDelete = entry
                                                     },
                                                 )
                                             }
@@ -414,7 +437,7 @@ fun TimefreeScreen(
                                         text = "戻る",
                                         color = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.clickable {
-                                            selectedStation = null
+                                            selectedStationId = null
                                         },
                                     )
                                 }
@@ -490,6 +513,18 @@ fun TimefreeScreen(
                 }
             }
         }
+    }
+
+    // ダウンロード削除の確認ダイアログ
+    pendingDelete?.let { entry ->
+        ConfirmDeleteDialog(
+            programTitle = entry.programTitle,
+            onConfirm = {
+                viewModel.deleteDownload(entry.stationId, entry.ftEpochMillis)
+                pendingDelete = null
+            },
+            onDismiss = { pendingDelete = null },
+        )
     }
 }
 

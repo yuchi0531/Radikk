@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +52,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -90,7 +92,7 @@ fun ProgramGuideScreen(
 ) {
     val stationState by viewModel.stationState.collectAsState()
     val reminders by viewModel.reminders.collectAsState()
-    var selectedDayOffset by remember { mutableStateOf(0) }
+    var selectedDayOffset by rememberSaveable { mutableStateOf(0) }
 
     val context = LocalContext.current
 
@@ -136,6 +138,10 @@ fun ProgramGuideScreen(
     // 局 → 番組リスト (EPG グリッド用に一括取得)
     var programsByStation by remember { mutableStateOf<Map<String, List<Program>>>(emptyMap()) }
     var loading by remember { mutableStateOf(false) }
+    // 取得失敗メッセージ (null なら失敗していない)。再試行ボタンでクリアして再取得する。
+    var guideError by remember { mutableStateOf<String?>(null) }
+    // 再試行で LaunchedEffect を再実行するためのカウンタ
+    var retryKey by remember { mutableStateOf(0) }
 
     // 選択中のエリアの局一覧 (stationState から)
     val stations = (stationState as? AppViewModel.StationUiState.Success)?.stations ?: emptyList()
@@ -149,13 +155,16 @@ fun ProgramGuideScreen(
     val days = remember { (0..7).toList() }
 
     // 日付・局一覧が変わったら全局の番組表を並列取得
-    LaunchedEffect(stations.map { it.id }.joinToString(","), selectedDayOffset) {
+    LaunchedEffect(stations.map { it.id }.joinToString(","), selectedDayOffset, retryKey) {
         if (stations.isEmpty()) return@LaunchedEffect
         loading = true
+        guideError = null
         try {
             programsByStation = viewModel.getProgramsForStations(stations, selectedDayOffset)
         } catch (e: Exception) {
             programsByStation = emptyMap()
+            // 失敗時は無言の空グリッドにせず、エラーと再試行ボタンを表示する
+            guideError = e.message ?: "番組表を取得できませんでした"
         } finally {
             loading = false
         }
@@ -238,6 +247,27 @@ fun ProgramGuideScreen(
                     if (stations.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text("聴ける局がありません")
+                        }
+                    } else if (guideError != null) {
+                        // 取得失敗: エラーメッセージ + 再試行ボタン (無言の空グリッドにしない)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(
+                                text = guideError.orEmpty(),
+                                color = MaterialTheme.colorScheme.error,
+                                textAlign = TextAlign.Center,
+                            )
+                            TextButton(
+                                onClick = { retryKey++ },
+                                modifier = Modifier.padding(top = 8.dp),
+                            ) {
+                                Text("再試行")
+                            }
                         }
                     } else if (loading) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -336,6 +366,9 @@ fun ProgramGuideScreen(
 
 /** 1時間あたりのピクセル数 (縦軸) */
 private val HOUR_HEIGHT_DP = 56.dp
+
+/** 番組セルの最小高さ (5分番組などの短いセルでもタイトルが読めるようにする) */
+private val MIN_CELL_HEIGHT_DP = 28.dp
 
 /** 1局あたりの幅 (横軸) */
 private val STATION_WIDTH_DP = 150.dp
@@ -546,17 +579,32 @@ private fun StationColumn(
                     Box(Modifier.height((gapHours * HOUR_HEIGHT_DP.value).dp))
                 }
                 val durationHours = (cellEnd.toEpochMilli() - cellStart.toEpochMilli()) / 3600_000.0
+                // レンダリングされるセル高さ (最小高さクランプ込み)。
+                // カーソルは実時間ではなく「レンダリングされた高さ」で進める。
+                // そうしないと短い番組のセルが最小高さで膨らむ分だけ列が 24h を超えて
+                // はみ出し、時刻ラベル列との位置がずれる (監査指摘 #3)。
+                // また、日付境界付近の短い番組が最小高さで 24h を越えないよう、
+                // 残り時間 (グリッド終端 - 実際の配置位置) で上限をクランプする。
+                // 配置位置はカーソル (直前のレンダリング済みセル) とセル開始の遅い方。
+                val placement = if (cursor.isAfter(cellStart)) cursor else cellStart
+                val remainingHours = (gridStart.plusSeconds(24 * 3600L).toEpochMilli() - placement.toEpochMilli()) / 3600_000.0
+                val renderedHeightDp = (durationHours * HOUR_HEIGHT_DP.value)
+                    .dp.coerceAtLeast(MIN_CELL_HEIGHT_DP)
+                    .coerceAtMost((remainingHours * HOUR_HEIGHT_DP.value).dp)
+                    .coerceAtLeast(0.dp)
                 ProgramCell(
                     program = program,
                     durationHours = durationHours,
+                    cellHeightDp = renderedHeightDp,
                     isReminderSet = reminderKeys.contains(station.id + "|" + program.ft.toEpochMilli()),
                     onClick = { onProgramClick(program) },
                     onLongClick = { onReminderClick(program) },
                 )
-                cursor = cellEnd
+                cursor = placement.plusSeconds((renderedHeightDp.value / HOUR_HEIGHT_DP.value * 3600).toLong())
             }
         }
-        // 末尾の空きを埋める
+        // 末尾の空きを埋める (カーソルは実時間ベースのため、レンダリング高さで
+        // 進めた分だけ末尾が短くなり、列全体はちょうど 24 × HOUR_HEIGHT_DP になる)
         val tailHours = (gridStart.plusSeconds(24 * 3600L).toEpochMilli() - cursor.toEpochMilli()) / 3600_000.0
         if (tailHours > 0) {
             Box(Modifier.height((tailHours * HOUR_HEIGHT_DP.value).dp))
@@ -575,15 +623,12 @@ private fun StationColumn(
 private fun ProgramCell(
     program: Program,
     durationHours: Double,
+    cellHeightDp: Dp,
     isReminderSet: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
     val isOnAir = program.isOnAir()
-
-    // 放送時間に応じた高さ (最低でもタイトル 1 行が収まる高さを確保する)
-    val minCellHeightDp = 28.dp
-    val cellHeightDp = (durationHours * HOUR_HEIGHT_DP.value).dp.coerceAtLeast(minCellHeightDp)
 
     // 高さが小さいセルはタイトル行を減らす (~40dp で時間行 + タイトル 2 行が収まる閾値)
     val titleMaxLines = if (durationHours * HOUR_HEIGHT_DP.value < 40f) 1 else 3

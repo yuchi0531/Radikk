@@ -24,6 +24,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -125,12 +126,13 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun AppScaffold(viewModel: AppViewModel) {
-    var selectedTab by remember { mutableStateOf(BottomTab.HOME) }
+    var selectedTab by rememberSaveable { mutableStateOf(BottomTab.HOME) }
     // ホームの「すべて見る」→ タイムフリーのダウンロードタブを開くためのフラグ
-    var timefreeOpenDownloads by remember { mutableStateOf(false) }
-    var showFullPlayer by remember { mutableStateOf(false) }
+    var timefreeOpenDownloads by rememberSaveable { mutableStateOf(false) }
+    var showFullPlayer by rememberSaveable { mutableStateOf(false) }
     val errorMessage by viewModel.errorMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val playerUiState by viewModel.playerUiState.collectAsState()
 
     // ホームタブ以外で戻るボタンを押したらホームタブへ戻る。
     // ホームタブではバックを無効にして、システム標準の動作（アプリ終了）に委ねる。
@@ -149,6 +151,14 @@ private fun AppScaffold(viewModel: AppViewModel) {
         errorMessage?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.consumePlayerError()
+        }
+    }
+
+    // 再生エラーを Snackbar で即時表示 (errorMessage 経由と独立した専用経路)
+    LaunchedEffect(playerUiState.error) {
+        playerUiState.error?.let {
+            snackbarHostState.showSnackbar(it.message ?: "再生エラー")
+            viewModel.clearPlayerError()
         }
     }
 

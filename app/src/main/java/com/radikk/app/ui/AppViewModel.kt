@@ -24,6 +24,7 @@ import com.radikk.app.player.PlaybackService
 import com.radikk.app.player.RadikoPlayer
 import com.radikk.app.player.StreamUrlResolver
 import com.radikk.app.util.RadikoTimeUtil
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicInteger
@@ -145,10 +147,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _timefreePreloadProgress = MutableStateFlow(0f)
     /** プリロード進捗 (0.0〜1.0)。局×日付の取得完了率。 */
     val timefreePreloadProgress: StateFlow<Float> = _timefreePreloadProgress.asStateFlow()
-
-    /** タイムフリー検索の準備状況: プリロード中の進捗%。完了済みなら null。 */
-    val timefreePreloadProgressPercent: Int
-        get() = if (_timefreePreloading.value) (_timefreePreloadProgress.value * 100).toInt().coerceIn(0, 100) else 100
 
     init {
         // PlaybackService に共有 MediaSession を公開 (バックグラウンド再生用)
@@ -389,10 +387,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun changeArea(areaId: String) {
         if (_selectedAreaId.value == areaId) return
         viewModelScope.launch {
-            // setAreaId すると settings コレクターが再認証を実行する
-            // (changeArea 側では refreshSession しない — 二重認証を防ぐ)
             settings.setAreaId(areaId)
+            // 先に _selectedAreaId を更新する (コレクターの再認証判定より先に
+            // loadStations / preloadTimefreeCache が新エリアを参照できるようにする)。
+            // コレクター経由の再認証は prevArea != s.areaId で判定されるため、
+            // ここで更新すると判定がスキップされる可能性がある。そこで再認証は
+            // このメソッド側でも明示的に実行する (Mutex シングルフライトで二重認証は起きない)。
             _selectedAreaId.value = areaId
+            refreshAuthIfNeeded(areaId)
             loadStations()
             // 新エリアの「今日分」番組表をプリロードする (検索・番組表を即時利用可能に)
             preloadTodayPrograms()
@@ -716,39 +718,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         maxDaysAgo: Int = 7,
     ): List<CachedTimefreeProgram> {
         if (stations.isEmpty()) return emptyList()
-        val byId = stations.associateBy { it.id }
-        val stationIds = byId.keys
-        // 1) タイムフリーキャッシュ (局選択で取得済みの分) — 現在エリアの局のみ
-        val timefree = timefreeCache.currentCachedPrograms().values.flatten()
-            .filter { it.stationId in stationIds }
-        // 2) 今日の番組表キャッシュ (起動時プリロード分) をタイムフリー期間内のものに変換
-        val todayCache = runCatching {
-            val areaId = _selectedAreaId.value
-            val apiDate = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart())
-            programCache.getPrograms(areaId, apiDate).values.flatten()
+        // 検索マージ (flatten / distinctBy / sort) は CPU 寄りのためメインスレッドで実行しない。
+        // キャッシュ読み取りは内部で DataStore から suspend 読み出しするため withContext 内でも安全。
+        return withContext(Dispatchers.Default) {
+            val byId = stations.associateBy { it.id }
+            val stationIds = byId.keys
+            // 1) タイムフリーキャッシュ (局選択で取得済みの分) — 現在エリアの局のみ
+            val timefree = timefreeCache.currentCachedPrograms().values.flatten()
                 .filter { it.stationId in stationIds }
-                .map { timefreeCache.toCached(it) }
-        }.getOrDefault(emptyList())
-        // マージ (ft で重複除去) + 期間内フィルタ + 局名補完
-        val enriched = (timefree + todayCache)
-            .distinctBy { it.stationId + "|" + it.ftEpochMillis }
-            .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
-            .map { timefreeCache.withStationName(it, byId[it.stationId]?.name ?: "") }
-        // 日付フィルター: 今日の JST 日付境界から maxDaysAgo 日遡った時点より後の番組のみ残す
-        val cutoff = RadikoTimeUtil.todayDayStart().minusSeconds(maxDaysAgo * 24 * 3600L)
-        val filteredByDate = enriched.filter {
-            Instant.ofEpochMilli(it.ftEpochMillis).isAfter(cutoff) ||
-                Instant.ofEpochMilli(it.ftEpochMillis) == cutoff
+            // 2) 今日の番組表キャッシュ (起動時プリロード分) をタイムフリー期間内のものに変換
+            val todayCache = runCatching {
+                val areaId = _selectedAreaId.value
+                val apiDate = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart())
+                programCache.getPrograms(areaId, apiDate).values.flatten()
+                    .filter { it.stationId in stationIds }
+                    .map { timefreeCache.toCached(it) }
+            }.getOrDefault(emptyList())
+            // マージ (ft で重複除去) + 期間内フィルタ + 局名補完
+            val enriched = (timefree + todayCache)
+                .distinctBy { it.stationId + "|" + it.ftEpochMillis }
+                .filter { timefreeCache.isWithinTimefree(Instant.ofEpochMilli(it.ftEpochMillis)) }
+                .map { timefreeCache.withStationName(it, byId[it.stationId]?.name ?: "") }
+            // 日付フィルター: 今日の JST 日付境界から maxDaysAgo 日遡った時点より後の番組のみ残す
+            val cutoff = RadikoTimeUtil.todayDayStart().minusSeconds(maxDaysAgo * 24 * 3600L)
+            val filteredByDate = enriched.filter {
+                Instant.ofEpochMilli(it.ftEpochMillis).isAfter(cutoff) ||
+                    Instant.ofEpochMilli(it.ftEpochMillis) == cutoff
+            }
+            if (query.isBlank()) {
+                return@withContext filteredByDate.sortedByDescending { it.ftEpochMillis }
+            }
+            val lower = query.trim().lowercase()
+            filteredByDate.filter {
+                it.title.lowercase().contains(lower) ||
+                    it.performer?.lowercase()?.contains(lower) == true ||
+                    it.stationName.lowercase().contains(lower)
+            }.sortedByDescending { it.ftEpochMillis }
         }
-        if (query.isBlank()) {
-            return filteredByDate.sortedByDescending { it.ftEpochMillis }
-        }
-        val lower = query.trim().lowercase()
-        return filteredByDate.filter {
-            it.title.lowercase().contains(lower) ||
-                it.performer?.lowercase()?.contains(lower) == true ||
-                it.stationName.lowercase().contains(lower)
-        }.sortedByDescending { it.ftEpochMillis }
     }
 
     /**
@@ -923,13 +929,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }.getOrDefault(false)
     }
 
-    /** 再生エラーを UI に反映する。 */
+    /**
+     * 再生エラーを消費する (旧経路)。
+     *
+     * 再生エラーの表示は MainActivity の専用 LaunchedEffect (playerUiState.error 監視) が
+     * 担当するため、ここではプレイヤーのエラーをクリアするだけで、_errorMessage には
+     * 書き込まない (Snackbar 二重表示を防ぐ)。
+     */
     fun consumePlayerError(): String? {
         val err = playerUiState.value.error
-        _errorMessage.value = err?.message
-        // プレイヤーのエラーをクリアする (次回再生時に古いエラーを再表示しない)
         radikoPlayer.clearError()
         return err?.message
+    }
+
+    /** 再生エラーを表示済みとしてクリアする (専用 Snackbar 表示後の消費)。 */
+    fun clearPlayerError() {
+        radikoPlayer.clearError()
     }
 
     /** エラーメッセージを表示する。 */

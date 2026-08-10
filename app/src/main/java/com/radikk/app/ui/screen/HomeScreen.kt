@@ -45,10 +45,12 @@ import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
 import com.radikk.app.ui.AppViewModel
 import com.radikk.app.ui.component.AreaSelector
+import com.radikk.app.ui.component.ConfirmDeleteDialog
 import com.radikk.app.ui.component.ProgramDetailDialog
 import com.radikk.app.ui.component.StationCard
 import com.radikk.app.util.RadikoTimeUtil
 import java.time.Instant
+import kotlinx.coroutines.delay
 
 /**
  * ホーム画面。
@@ -115,11 +117,21 @@ fun HomeScreen(
     var onAirPrograms by remember { mutableStateOf<Map<String, Program>>(emptyMap()) }
     LaunchedEffect(stations.map { it.id }.joinToString(",")) {
         if (stations.isEmpty()) return@LaunchedEffect
-        val map = viewModel.getProgramsForStations(stations, 0)
-        onAirPrograms = map.entries.flatMap { (sid, progs) ->
-            progs.filter { it.isOnAir() }.map { sid to it }
-        }.toMap()
+        while (true) {
+            // 一時的な取得失敗でループが死なないように握りつぶす (次回更新で補完)
+            runCatching {
+                val map = viewModel.getProgramsForStations(stations, 0)
+                onAirPrograms = map.entries.flatMap { (sid, progs) ->
+                    progs.filter { it.isOnAir() }.map { sid to it }
+                }.toMap()
+            }
+            // 番組切替に追従するため 60 秒ごとに再取得する (画面表示中のみ)
+            delay(60_000)
+        }
     }
+
+    // 削除確認ダイアログの対象 (null なら非表示)
+    var pendingDelete by remember { mutableStateOf<DownloadedProgram?>(null) }
 
     Scaffold(
         modifier = modifier,
@@ -189,10 +201,25 @@ fun HomeScreen(
                 downloads = downloads.take(5),
                 totalCount = downloads.size,
                 onEntryClick = { viewModel.playDownloaded(it) },
-                onRemove = { viewModel.deleteDownload(it.stationId, it.ftEpochMillis) },
+                onRemove = {
+                    // 削除は確認ダイアログを経由する (7日経過後は再DL不可)
+                    pendingDelete = it
+                },
                 onShowAll = onShowAllDownloads,
             )
         }
+    }
+
+    // ダウンロード削除の確認ダイアログ
+    pendingDelete?.let { entry ->
+        ConfirmDeleteDialog(
+            programTitle = entry.programTitle,
+            onConfirm = {
+                viewModel.deleteDownload(entry.stationId, entry.ftEpochMillis)
+                pendingDelete = null
+            },
+            onDismiss = { pendingDelete = null },
+        )
     }
 
     // 番組詳細ダイアログ
