@@ -134,6 +134,14 @@ class RadikoPlayer(
     /** シークバー位置の再生アンカー (スライディングウィンドウ非依存の表示位置計算用) */
     private var playAnchorElapsed: Long = 0L
     private var playAnchorPositionMs: Long = 0L
+    /**
+     * 現在の HLS ウィンドウ先頭が対応する論理位置 (ミリ秒)。
+     * 通常再生・小オフセットシークはウィンドウ先頭 = 番組先頭のため 0。
+     * URL ベースシーク (startPositionMs > 60s) ではサーバーがシーク位置から始まる
+     * medialist を返すため、ウィンドウ先頭 (ExoPlayer 位置 0) = 論理位置 startPositionMs になる。
+     * ポーリングのアンカー再同期 (ドリフト補正) でこの基準位置を加算して論理位置を維持する。
+     */
+    private var windowBasePositionMs: Long = 0L
     private var isPlayingState = false
 
     /**
@@ -216,13 +224,16 @@ class RadikoPlayer(
      * ~300s のスライディングウィンドウの medialist を返すため、メディア自体が seek 位置
      * から開始する。この場合 ExoPlayer への `seekTo` は不要で、行うとロード済みウィンドウの
      * 外を指して永久 BUFFERING に陥る可能性がある。よって `_player.seekTo` は
-     * ロード済みウィンドウ内とみなせる小さいオフセット (1..300_000ms) のときだけ実行する。
+     * ロード済みウィンドウ内とみなせる小さいオフセット (1..60_000ms) のときだけ実行する。
      */
     fun playMedialist(medialistUrl: String, durationOverrideMs: Long? = null, startPositionMs: Long = 0L) {
         this.durationOverrideMs = durationOverrideMs
         this.nativePosition = false
         this.playAnchorElapsed = SystemClock.elapsedRealtime()
         this.playAnchorPositionMs = startPositionMs
+        // URL ベースシーク (60s 超) ではウィンドウ先頭 = 論理位置 startPositionMs。
+        // 小オフセットは ExoPlayer シークするためウィンドウ先頭 = 番組先頭 (0) のまま。
+        this.windowBasePositionMs = if (startPositionMs > 60_000L) startPositionMs else 0L
         this.isPlayingState = false
         val factory = dataSourceFactory ?: run {
             Log.e(TAG, "setAuth() が呼ばれていない")
@@ -242,9 +253,9 @@ class RadikoPlayer(
         _player.setMediaSource(hlsSource)
         _player.prepare()
         // ウィンドウ基準のシーク (radiko はウィンドウ先頭が ft)。初期オフセットが
-        // ロード済みウィンドウ内 (典型 ~300s) のときのみ実行する。ウィンドウ外の場合は
+        // ロード済みウィンドウ内 (60s 以下) のときのみ実行する。ウィンドウ外の場合は
         // サーバーが seek 位置から開始する medialist を返すため ExoPlayer シークは不要。
-        if (startPositionMs in 1..300_000L) {
+        if (startPositionMs in 1..60_000L) {
             runCatching { _player.seekTo(startPositionMs) }
         }
         startPlaybackService()
@@ -341,6 +352,11 @@ class RadikoPlayer(
         _player.stop()
     }
 
+    /**
+     * 完全解放。
+     * 再生が終了している・一時停止していないなど、バックグラウンド継続が不要なときに呼ぶ。
+     * 再生中にスワイプアウェイされた場合は [releaseForBackground] を使うこと。
+     */
     fun release() {
         // 位置ポーリングを停止してから player を解放する
         // (解放済み ExoPlayer へのアクセスで IllegalStateException になるのを防ぐ)
@@ -349,8 +365,36 @@ class RadikoPlayer(
         pollJob = null
         pollScope.cancel()
         stopPlaybackService()
+        // 自分自身のセッションが公開されている場合のみクリアする
+        // (別インスタンスのライブセッションを誤って消さない)
+        if (PlaybackService.sharedMediaSession === mediaSession) {
+            PlaybackService.sharedMediaSession = null
+        }
         mediaSession.release()
         _player.release()
+    }
+
+    /**
+     * バックグラウンド再生継続用の軽量リリース。
+     *
+     * タスクのスワイプアウェイで Activity (AppViewModel) が破棄される際、再生中なら
+     * これを呼ぶ。ExoPlayer と MediaSession は解放せず、位置ポーリングの停止と
+     * アプリ側 MediaController の切断のみ行う。PlaybackService の FGS は Media3 の
+     * MediaNotificationManager が独自コントローラーでセッションに接続し続けるため、
+     * アプリ側コントローラーを切断しても再生と通知は継続する。
+     *
+     * 明示的な停止は [stop] + [stopPlaybackService] (AppViewModel.stop) が担い、
+     * このメソッドは再生を止めない。
+     */
+    fun releaseForBackground() {
+        released = true
+        pollJob?.cancel()
+        pollJob = null
+        pollScope.cancel()
+        stopPlaybackService()
+        // _player と mediaSession は解放しない (FGS が再生を継続する)
+        // PlaybackService.sharedMediaSession は生きたセッションのまま残す
+        // (onTaskRemoved が再生継続を正しく判定できるようにする)
     }
 
     private fun applyAudioAttributes() {
@@ -428,7 +472,9 @@ class RadikoPlayer(
             if (d > 0) return d
         }
         durationOverrideMs?.let { if (it > 0) return it }
-        val d = _player.duration
+        // release() 直後にリスナーから呼ばれた場合に解放済み player の duration で
+        // 例外 (IllegalStateException 等) が起きないよう runCatching で保護する
+        val d = runCatching { _player.duration }.getOrNull() ?: 0L
         return if (d > 0) d else 0L
     }
 
@@ -459,6 +505,18 @@ class RadikoPlayer(
                 pollJob = pollScope.launch {
                     while (isActive && !released) {
                         runCatching {
+                            // バッファリング等で実再生位置が壁時計の外挿からドリフトするため、
+                            // READY 中は ExoPlayer の実位置にアンカーを再同期する。
+                            // シーク直後は BUFFERING (READY ではない) になるため、
+                            // seekTo で設定したアンカーは壊さない (steady-state でのみ動作)。
+                            if (!nativePosition &&
+                                _player.playbackState == Player.STATE_READY &&
+                                _player.currentPosition > 0
+                            ) {
+                                // URL ベースシークではウィンドウ先頭 = 論理位置 (windowBasePositionMs) のため加算する
+                                playAnchorPositionMs = windowBasePositionMs + _player.currentPosition
+                                playAnchorElapsed = SystemClock.elapsedRealtime()
+                            }
                             _uiState.value = _uiState.value.copy(
                                 positionMs = currentLogicalPosition(),
                                 durationMs = effectiveDuration(),

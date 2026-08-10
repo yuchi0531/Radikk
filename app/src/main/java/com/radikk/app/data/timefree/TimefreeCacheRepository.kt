@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 private val Context.timefreeDataStore by preferencesDataStore(name = "radikk_timefree")
 
@@ -42,20 +43,56 @@ data class CachedTimefreeProgram(
  */
 class TimefreeCacheRepository(private val context: Context) {
 
-    private val json = Json { ignoreUnknownKeys = true }
-
     /** タイムフリー再生可能な最大期間 (過去7日間 = 168時間) */
     companion object {
         private const val PREFIX = "timefree_"
         private const val MAX_AGE_HOURS = 24 * 7L // 7日
         const val MAX_AGE_MILLIS = MAX_AGE_HOURS * 3600 * 1000L
 
+        // 旧実装が書き込んでいた TTL キー。新実装では書き込まないが、
+        // 過去に書き込まれたキーを removeStation/clearAll で掃除するために残す。
         private const val PREFIX_TTL = "timefree_ttl_"
 
         /** 指定時刻 (エポックミリ秒) がタイムフリー期間内か。 */
         fun isWithinTimefree(ftEpochMillis: Long, nowEpochMillis: Long): Boolean {
             val cutoff = nowEpochMillis - MAX_AGE_MILLIS
             return ftEpochMillis >= cutoff && ftEpochMillis <= nowEpochMillis
+        }
+    }
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * 検索ホットパス用のメモリキャッシュ (局ID → 番組リスト)。
+     *
+     * プリロード (全局×7日) と検索が同一プロセスで動く前提。DataStore のフル再読込・
+     * 再デコードを検索のたびに行うと、毎キーストロークで全局分の JSON をデコードしてしまう。
+     * DataStore が正になるが、このマップはインメモリの読み取り専用ビューとして扱う。
+     *
+     * 並列プリロード (約110局) が同時に書き込むため ConcurrentHashMap でスレッドセーフにする。
+     * 読み取り時に期間外フィルタは行わない (cachedPrograms フローの読み取り時と同じ
+     * セマンティクスを保つため、currentCachedPrograms でフィルタする)。
+     */
+    private val memoryCache = ConcurrentHashMap<String, List<CachedTimefreeProgram>>()
+    private var memoryLoaded = false
+
+    /**
+     * DataStore からメモリキャッシュへ一度だけロードする。
+     * 初回アクセス時 (currentCachedPrograms) に DataStore の全件を読み、以降はメモリから返す。
+     */
+    private suspend fun ensureMemoryLoaded() {
+        if (memoryLoaded) return
+        // キャッシュのプリロードは一度だけだが、並列コルーチンから同時に呼ばれうる。
+        // synchronized 内で suspend (first()) はコンパイルエラーになるため、
+        // ロードをロックの外で行い、書き込みだけをロック内で二重チェックする。
+        // (同じ内容の冪等な書き込みなので、稀に二重に読んでも問題ない)
+        val loaded = cachedPrograms.first()
+        synchronized(this) {
+            if (memoryLoaded) return
+            loaded.forEach { (stationId, programs) ->
+                memoryCache[stationId] = programs
+            }
+            memoryLoaded = true
         }
     }
 
@@ -86,9 +123,20 @@ class TimefreeCacheRepository(private val context: Context) {
 
     /**
      * 現在のキャッシュを取得する (期間外は破棄済み)。
+     *
+     * メモリキャッシュから返す。メモリ未ロード時は DataStore から一度だけロードする。
+     * 書き込み (putStationPrograms) は DataStore とメモリの両方を更新するため、
+     * メモリキャッシュは常に DataStore と同じ内容を保持する (期間外フィルタはここで適用)。
      */
-    suspend fun currentCachedPrograms(): Map<String, List<CachedTimefreeProgram>> =
-        cachedPrograms.first()
+    suspend fun currentCachedPrograms(): Map<String, List<CachedTimefreeProgram>> {
+        ensureMemoryLoaded()
+        val now = Instant.now().toEpochMilli()
+        val cutoff = now - MAX_AGE_MILLIS
+        return memoryCache.mapValues { (_, programs) ->
+            programs.filter { it.ftEpochMillis >= cutoff && it.ftEpochMillis <= now }
+                .map { it.normalizeNullStrings() }
+        }.filterValues { it.isNotEmpty() }
+    }
 
     /**
      * 指定局の番組をキャッシュに追加/更新する。
@@ -96,8 +144,8 @@ class TimefreeCacheRepository(private val context: Context) {
     suspend fun putStationPrograms(stationId: String, programs: List<CachedTimefreeProgram>) {
         context.timefreeDataStore.edit { p ->
             p[stringPreferencesKey(PREFIX + stationId)] = json.encodeToString(programs)
-            p[stringPreferencesKey(PREFIX_TTL + stationId)] = Instant.now().toEpochMilli().toString()
         }
+        memoryCache[stationId] = programs
     }
 
     /**
@@ -108,6 +156,7 @@ class TimefreeCacheRepository(private val context: Context) {
             p.remove(stringPreferencesKey(PREFIX + stationId))
             p.remove(stringPreferencesKey(PREFIX_TTL + stationId))
         }
+        memoryCache.remove(stationId)
     }
 
     /**
@@ -119,6 +168,7 @@ class TimefreeCacheRepository(private val context: Context) {
                 .filter { it.name.startsWith(PREFIX) || it.name.startsWith(PREFIX_TTL) }
                 .forEach { p.remove(it) }
         }
+        memoryCache.clear()
     }
 
     /**

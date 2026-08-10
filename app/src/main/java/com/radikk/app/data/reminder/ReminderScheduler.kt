@@ -42,8 +42,12 @@ class ReminderScheduler(private val context: Context) {
             intent,
             PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
         )
-        pendingIntent?.cancel()
-        alarmManager.cancel(pendingIntent)
+        // FLAG_NO_CREATE は未登録なら null を返す。null を AlarmManager.cancel に渡すと
+        // NPE になるため、登録済みの場合のみキャンセルする。
+        if (pendingIntent != null) {
+            pendingIntent.cancel()
+            alarmManager.cancel(pendingIntent)
+        }
     }
 
     /** 全リマインダーを再スケジュールする (アプリ起動時・再起動後)。 */

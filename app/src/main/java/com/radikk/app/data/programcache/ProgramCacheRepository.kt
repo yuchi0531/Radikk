@@ -1,6 +1,7 @@
 package com.radikk.app.data.programcache
 
 import android.content.Context
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -90,7 +91,33 @@ class ProgramCacheRepository(private val context: Context) {
                 p[stringPreferencesKey(PREFIX_TTL + "$areaId|$apiDate")] =
                     Instant.now().toEpochMilli().toString()
             }
+            // 14日より古い日付のキャッシュを削除する (キー無制限成長の防止)
+            pruneOldDays(p, areaId)
         }
+    }
+
+    /**
+     * 指定エリアの 14 日より古い日付 (apiDate YYYYMMDD) のキャッシュを削除する。
+     * キー形式 `{PREFIX}{areaId}|{apiDate}|{stationId}` から日付部分を抽出し、
+     * 今日の放送日より 14 日以上前のエントリと対応する TTL キーを除去する。
+     * apiDate はゼロ埋め 8 桁のため、文字列比較で日付順が保証される。
+     */
+    private fun pruneOldDays(p: MutablePreferences, areaId: String) {
+        val cutoff = RadikoTimeUtil.apiDateFor(RadikoTimeUtil.todayDayStart().minusSeconds(14 * 24 * 3600L))
+        val prefix = PREFIX + "$areaId|"
+        p.asMap().keys
+            .filter { it.name.startsWith(prefix) }
+            .mapNotNull { key ->
+                // キーの残り部分は `{apiDate}|{stationId}` 形式
+                val rest = key.name.removePrefix(prefix)
+                val apiDatePart = rest.substringBefore('|')
+                apiDatePart.takeIf { it.length == 8 && it.all(Char::isDigit) }?.let { key to it }
+            }
+            .filter { (_, datePart) -> datePart < cutoff }
+            .forEach { (key, datePart) ->
+                p.remove(key)
+                p.remove(stringPreferencesKey(PREFIX_TTL + "$areaId|$datePart"))
+            }
     }
 
     /**

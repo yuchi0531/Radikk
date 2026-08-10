@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.Player
 import com.radikk.app.RadikkApplication
 import com.radikk.app.data.datastore.AppSettings
 import com.radikk.app.data.datastore.ThemeMode
@@ -1030,7 +1031,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         get() = radikoPlayer.player.isPlaying
 
     override fun onCleared() {
-        radikoPlayer.release()
+        // タスクのスワイプアウェイなどで ViewModel が破棄される際、
+        // 再生中 (またはメディアセッションが生きている) なら完全解放しない。
+        // バックグラウンド再生は PlaybackService の FGS が担うため、ここで
+        // ExoPlayer/MediaSession を解放すると再生が止まってしまう (実機で検証済みの設計)。
+        // ポーリング停止とアプリ側コントローラー切断のみ行い、再生は継続させる。
+        val player = radikoPlayer
+        val playing = runCatching { player.player.isPlaying }.getOrDefault(false)
+        val hasSession = runCatching { player.mediaSession.player.playbackState != Player.STATE_IDLE }.getOrDefault(false)
+        if (playing || hasSession) {
+            player.releaseForBackground()
+        } else {
+            player.release()
+        }
         super.onCleared()
     }
 }

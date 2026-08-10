@@ -1,13 +1,16 @@
 package com.radikk.app.data.reminder
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.radikk.app.MainActivity
 import com.radikk.app.R
 import com.radikk.app.util.RadikoTimeUtil
@@ -26,6 +29,16 @@ class ReminderReceiver : BroadcastReceiver() {
         val startEpochMillis = intent.getLongExtra(EXTRA_START_EPOCH, 0L)
         val endEpochMillis = intent.getLongExtra(EXTRA_END_EPOCH, 0L)
         val reminderId = intent.getStringExtra(EXTRA_REMINDER_ID) ?: return
+
+        // Android 13+ で POST_NOTIFICATIONS 未許可の場合は通知を表示できない。
+        // 通知権限をリクエストする手段はここ (BroadcastReceiver) にはないため、
+        // 何も表示せず静かにスキップする (クラッシュさせない)。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
 
         val notificationManager =
             context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

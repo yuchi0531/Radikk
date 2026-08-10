@@ -65,5 +65,9 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "PlaybackService destroyed")
+        // プロセス生存中は RadikoPlayer.release() が共有セッションをクリアするが、
+        // プロセス死 (タスクのスワイプアウェイで FGS ごと破棄される場合など) では
+        // 解放済み MediaSession が残留しうる。ここで確実に null にしておく。
+        sharedMediaSession = null
     }
 }
