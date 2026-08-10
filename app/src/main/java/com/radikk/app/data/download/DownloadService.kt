@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.radikk.app.MainActivity
@@ -44,6 +45,13 @@ class DownloadService : Service() {
 
     private var notificationManager: NotificationManager? = null
 
+    /**
+     * 通知が利用可能かどうか。
+     * Android 13+ で POST_NOTIFICATIONS 未許可のとき startForeground が例外を投げるため、
+     * 成功した場合のみ true にして通知関連の処理を有効化する。
+     */
+    private var notificationsEnabled = false
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -68,15 +76,25 @@ class DownloadService : Service() {
                     return START_NOT_STICKY
                 }
                 val notification = buildProgressNotification("ダウンロード中", 0f, params.programTitle)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-                    )
-                } else {
-                    // API 28 以下には型付き startForeground(int, Notification, int) が無い
-                    startForeground(NOTIFICATION_ID, notification)
+                // Android 13+ で通知権限 (POST_NOTIFICATIONS) が無いと startForeground が
+                // 例外 (NotificationRuntimeException / SecurityException) を投げる。
+                // クラッシュさせずにダウンロード自体は続行し、通知だけ無効化する。
+                notificationsEnabled = try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        startForeground(
+                            NOTIFICATION_ID,
+                            notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                        )
+                    } else {
+                        // API 28 以下には型付き startForeground(int, Notification, int) が無い
+                        startForeground(NOTIFICATION_ID, notification)
+                    }
+                    true
+                } catch (e: Exception) {
+                    Log.w(TAG, "通知が無効のため startForeground に失敗しました: ${e.message}")
+                    DownloadEvents.messages.value = "通知が無効のため進捗を表示できません"
+                    false
                 }
                 job = scope.launch {
                     runDownload(params)
@@ -199,34 +217,43 @@ class DownloadService : Service() {
 
     /** 通知の進捗・タイトルを最新値で更新する。 */
     private fun notifyProgress(title: String, progress: Float) {
-        notificationManager?.notify(
-            NOTIFICATION_ID,
-            buildProgressNotification("ダウンロード中", progress, title),
-        )
+        if (!notificationsEnabled) return
+        runCatching {
+            notificationManager?.notify(
+                NOTIFICATION_ID,
+                buildProgressNotification("ダウンロード中", progress, title),
+            )
+        }
     }
 
     /** 完了通知 (スワイプで消せる)。 */
     private fun notifyCompletion(message: String) {
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
-            .setContentTitle("ダウンロード完了")
-            .setContentText(message)
-            .setAutoCancel(true)
-            .setContentIntent(contentPendingIntent())
-            .build()
-        notificationManager?.notify(NOTIFICATION_ID, notification)
+        if (!notificationsEnabled) return
+        runCatching {
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("ダウンロード完了")
+                .setContentText(message)
+                .setAutoCancel(true)
+                .setContentIntent(contentPendingIntent())
+                .build()
+            notificationManager?.notify(NOTIFICATION_ID, notification)
+        }
     }
 
     /** 失敗通知 (スワイプで消せる)。 */
     private fun notifyFailure(message: String) {
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
-            .setContentTitle("ダウンロード失敗")
-            .setContentText(message)
-            .setAutoCancel(true)
-            .setContentIntent(contentPendingIntent())
-            .build()
-        notificationManager?.notify(NOTIFICATION_ID, notification)
+        if (!notificationsEnabled) return
+        runCatching {
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("ダウンロード失敗")
+                .setContentText(message)
+                .setAutoCancel(true)
+                .setContentIntent(contentPendingIntent())
+                .build()
+            notificationManager?.notify(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun contentPendingIntent(): PendingIntent =

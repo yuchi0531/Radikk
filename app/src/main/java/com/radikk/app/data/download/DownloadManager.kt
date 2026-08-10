@@ -12,6 +12,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.time.Instant
+import kotlinx.coroutines.delay
 
 /**
  * タイムフリー番組のダウンロード実行。
@@ -54,10 +55,36 @@ class DownloadManager(
         const val WINDOW_MS = 300_000L
 
         /**
+         * ウィンドウループで「新しいセグメントが得られない」状態を許容する回数。
+         * ウィンドウ境界では同一 URL が重複し得るため、1 回の無進歩は正常だが、
+         * これを超えて続く場合は配信が途中で止まったと判断する。
+         */
+        private const val MAX_CONSECUTIVE_NO_PROGRESS_WINDOWS = 2
+
+        /**
+         * セグメント取得でリトライする 5xx エラーの HTTP ステータスコード。
+         */
+        private val RETRYABLE_5XX = setOf(500, 502, 503, 504)
+
+        /**
+         * セグメント取得の 5xx リトライ回数。
+         */
+        private const val SEGMENT_5XX_RETRY_COUNT = 2
+
+        /**
+         * セグメント取得の 5xx リトライ間隔 (ミリ秒)。
+         */
+        private const val SEGMENT_5XX_RETRY_DELAY_MS = 1_000L
+
+        /**
          * セグメント先頭の ID3v2 タグを除去して純粋な ADTS AAC だけを返す。
          * radiko の .aac セグメントは「ID3v2 タグ + ADTS」の構成。
          * ID3v2 ヘッダーは "ID3" + バージョン2B + フラグ1B + サイズ4B (syncsafe)。
          * ヘッダー10B + サイズ分をスキップする。
+         *
+         * ヘッダーは存在するがタグ本体が途中で切れている (skip > data.size) 場合は
+         * 不完全なセグメントとして空を返す。元データを返すと ID3 が残ったままになり
+         * ADTS フレームが壊れて再生に失敗するため。
          */
         internal fun stripId3(data: ByteArray): ByteArray {
             if (data.size < 10) return data
@@ -70,8 +97,28 @@ class DownloadManager(
                 if (skip > 0 && skip <= data.size) {
                     return data.copyOfRange(skip, data.size)
                 }
+                // タグサイズがデータ全体を超える = ヘッダーは切れているが本体が欠落した
+                // 不完全なセグメント。元データを返すと ADTS フレーミングが壊れるため空を返す。
+                if (skip > data.size) {
+                    return ByteArray(0)
+                }
             }
             return data
+        }
+    }
+
+    /**
+     * ダウンロード中に 401 (トークン失効) で新トークンに差し替わった場合、
+     * その後のウィンドウ / セグメント取得すべてに新しいトークンを使うための
+     * ミュータブルなトークン保持クラス。
+     */
+    private class TokenRef(initial: String) {
+        var token: String = initial
+
+        fun headers(): Map<String, String> = mapOf(HEADER_NAME to token)
+
+        companion object {
+            const val HEADER_NAME = "X-Radiko-AuthToken"
         }
     }
 
@@ -110,12 +157,14 @@ class DownloadManager(
     ): DownloadedProgram {
         // 呼び出しごとのプロバイダを優先し、無ければコンストラクタの既定を使う
         val tokenProvider = freshTokenProvider ?: this.freshTokenProvider
-        val headers = mapOf("X-Radiko-AuthToken" to token)
+        // 401 でトークンが差し替わった場合に全ウィンドウ / セグメントへ反映するため、
+        // 固定の headers ではなくミュータブルな TokenRef を共有する。
+        val tokenRef = TokenRef(token)
         val durationMs = (to.toEpochMilli() - ft.toEpochMilli()).coerceAtLeast(0L)
 
         // 1-4. ウィンドウループで番組全体のセグメント URL を収集
         val segments = try {
-            collectAllSegmentUrls(stationId, ft, to, durationMs, headers, tokenProvider)
+            collectAllSegmentUrls(stationId, ft, to, durationMs, tokenRef, tokenProvider)
         } catch (e: Exception) {
             throw mapAuthError(e)
         }
@@ -138,7 +187,7 @@ class DownloadManager(
                 ?: throw IOException("ダウンロード先にファイルを作成できませんでした")
             try {
                 context.contentResolver.openOutputStream(doc.uri)?.use { out ->
-                    writeSegments(out, segments, headers, onProgress, tokenProvider)
+                    writeSegments(out, segments, tokenRef, onProgress, tokenProvider)
                 } ?: throw IOException("出力ストリームを開けませんでした")
             } catch (e: Exception) {
                 // 失敗時は部分ファイルを削除して再スローする
@@ -153,7 +202,7 @@ class DownloadManager(
             val outputFile = File(dir, fileName)
             try {
                 FileOutputStream(outputFile).use { out ->
-                    writeSegments(out, segments, headers, onProgress, tokenProvider)
+                    writeSegments(out, segments, tokenRef, onProgress, tokenProvider)
                 }
             } catch (e: Exception) {
                 // 失敗時は部分ファイルを削除して再スローする
@@ -188,32 +237,57 @@ class DownloadManager(
      * [WINDOW_MS] ずつ進めて「番組先頭 + オフセット」の seek パラメータ付きで
      * プレイリストを作り直す。ウィンドウ境界では同じ URL が重複し得るため、
      * [LinkedHashSet] で URL 重複排除する (出現順は保持)。
+     *
+     * 終了条件:
+     * - 番組終了 (durationMs) に達し、最後のウィンドウが進捗を得た
+     * - 番組終了前に「新しいセグメントが得られない」ウィンドウが [MAX_CONSECUTIVE_NO_PROGRESS_WINDOWS]
+     *   回連続した → 配信が途中で止まったと判断して IOException
+     *   (ウィンドウ境界では同じ URL が重複し得るため 1 回の無進歩は許容する。
+     *   最後のウィンドウが無進歩のまま番組終了に達した場合も末尾欠落としてエラーにする)
      */
     private suspend fun collectAllSegmentUrls(
         stationId: String,
         ft: Instant,
         to: Instant,
         durationMs: Long,
-        headers: Map<String, String>,
+        tokenRef: TokenRef,
         freshTokenProvider: (suspend () -> String?)?,
     ): List<String> {
         val allSegments = LinkedHashSet<String>()
         var windowStartMs = 0L
+        var consecutiveNoProgress = 0
         while (true) {
             val previousCount = allSegments.size
-            val (medialistUrl, body) = fetchWindowBody(stationId, ft, to, windowStartMs, headers, freshTokenProvider)
+            val (medialistUrl, body) = fetchWindowBody(stationId, ft, to, windowStartMs, tokenRef, freshTokenProvider)
             allSegments.addAll(resolver.extractSegmentUrls(body, medialistUrl))
 
-            // ウィンドウを進めても新しいセグメントが得られない場合は
-            // これ以上進んでも無限に空ループするだけなので中断する。
             if (allSegments.size == previousCount) {
-                Log.w(TAG, "ウィンドウ $windowStartMs で新しいセグメントが得られませんでした。収集を中断します (${allSegments.size} 件)")
-                break
+                // ウィンドウ境界では同じ URL が重複し得るため、1 回の無進歩は許容する。
+                // 連続して無進歩なら配信が途中で止まったと判断する。
+                consecutiveNoProgress++
+                Log.w(
+                    TAG,
+                    "ウィンドウ $windowStartMs で新しいセグメントが得られませんでした " +
+                        "($consecutiveNoProgress/${MAX_CONSECUTIVE_NO_PROGRESS_WINDOWS} 回)",
+                )
+            } else {
+                consecutiveNoProgress = 0
+            }
+
+            // 番組終了まで進み、最後のウィンドウが正常に進捗していれば完了。
+            // 最後のウィンドウが無進歩のまま番組終了に達した場合は、末尾が欠落して
+            // いる可能性が高いため、下の確認でエラーにする (黙って切り捨てない)。
+            if (windowStartMs + WINDOW_MS >= durationMs && consecutiveNoProgress == 0) break
+
+            // 無進歩が連続したら末尾欠落としてエラー
+            if (consecutiveNoProgress >= MAX_CONSECUTIVE_NO_PROGRESS_WINDOWS) {
+                throw IOException(
+                    "セグメント収集が途中で停止しました " +
+                        "(ウィンドウ ${windowStartMs / 1000}s, ${allSegments.size} セグメント)",
+                )
             }
 
             windowStartMs += WINDOW_MS
-            // 次のウィンドウ開始が番組終了以上になったら終了
-            if (windowStartMs >= durationMs) break
         }
         return allSegments.toList()
     }
@@ -221,7 +295,9 @@ class DownloadManager(
     /**
      * 1 ウィンドウ分の medialist を取得する。
      * 401 (トークン失効) の場合は [freshTokenProvider] で新トークンを取得して
-     * そのウィンドウだけ 1 回再試行する。再試行が無い / 失敗した場合は元の例外を投げる。
+     * [tokenRef] に反映した上で、そのウィンドウだけ 1 回再試行する。
+     * 再試行が無い / 失敗した場合は元の例外を投げる。
+     * 5xx (500/502/503/504) は短い間隔でリトライする。
      * @return medialist URL と body のペア (URL 相対のセグメント解決に medialist URL が必要なため)
      */
     private suspend fun fetchWindowBody(
@@ -229,19 +305,19 @@ class DownloadManager(
         ft: Instant,
         to: Instant,
         seekOffsetMs: Long,
-        headers: Map<String, String>,
+        tokenRef: TokenRef,
         freshTokenProvider: (suspend () -> String?)?,
     ): Pair<String, String> {
-        val token = headers["X-Radiko-AuthToken"]!!
         try {
-            val url = resolver.resolveTimefreeMedialistUrl(stationId, token, ft, to, seekOffsetMs = seekOffsetMs)
-            return url to apiClient.getString(url, headers)
+            val url = resolver.resolveTimefreeMedialistUrl(stationId, tokenRef.token, ft, to, seekOffsetMs = seekOffsetMs)
+            return url to apiClient.getString(url, tokenRef.headers())
         } catch (e: Exception) {
             if (isAuth401(e) && freshTokenProvider != null) {
                 val newToken = freshTokenProvider() ?: throw e
-                val newHeaders = mapOf("X-Radiko-AuthToken" to newToken)
+                // 新しいトークンを共有 TokenRef に反映して、以後の全取得で使う
+                tokenRef.token = newToken
                 val url = resolver.resolveTimefreeMedialistUrl(stationId, newToken, ft, to, seekOffsetMs = seekOffsetMs)
-                return url to apiClient.getString(url, newHeaders)
+                return url to apiClient.getString(url, tokenRef.headers())
             }
             throw e
         }
@@ -250,37 +326,60 @@ class DownloadManager(
     /**
      * 1 セグメント分のバイト列を取得する。
      * 401 (トークン失効) の場合は [freshTokenProvider] で新トークンを取得して
-     * そのセグメントだけ 1 回再試行する。再試行が無い / 失敗した場合は元の例外を投げる。
+     * [tokenRef] に反映した上で、そのセグメントだけ 1 回再試行する。
+     * 5xx (500/502/503/504) は短い間隔で数回リトライする。
+     * リトライを使い切った場合は最後のエラーをそのまま投げる。
      */
     private suspend fun fetchSegmentBytes(
         url: String,
-        headers: Map<String, String>,
+        tokenRef: TokenRef,
         freshTokenProvider: (suspend () -> String?)?,
     ): ByteArray {
-        try {
-            return apiClient.getBytes(url, headers)
-        } catch (e: Exception) {
-            if (isAuth401(e) && freshTokenProvider != null) {
-                val newToken = freshTokenProvider() ?: throw e
-                return apiClient.getBytes(url, mapOf("X-Radiko-AuthToken" to newToken))
+        var lastError: Exception? = null
+        var attempts = 0
+        // 5xx は一時的なサーバー障害の可能性が高いため、短い間隔で数回リトライする
+        while (attempts <= SEGMENT_5XX_RETRY_COUNT) {
+            attempts++
+            try {
+                return apiClient.getBytes(url, tokenRef.headers())
+            } catch (e: Exception) {
+                if (isAuth401(e) && freshTokenProvider != null) {
+                    val newToken = freshTokenProvider() ?: throw e
+                    // 新しいトークンを共有 TokenRef に反映して、以後の全取得で使う
+                    tokenRef.token = newToken
+                    return apiClient.getBytes(url, tokenRef.headers())
+                }
+                if (isRetryable5xx(e) && attempts <= SEGMENT_5XX_RETRY_COUNT) {
+                    lastError = e
+                    delay(SEGMENT_5XX_RETRY_DELAY_MS)
+                    continue
+                }
+                throw e
             }
-            throw e
         }
+        throw lastError ?: IOException("セグメント取得に失敗しました")
     }
 
     /** HTTP 401 (トークン失効) かどうか。 */
     private fun isAuth401(e: Exception): Boolean = (e.message ?: "").contains("HTTP 401")
 
+    /** HTTP 5xx (一時的なサーバー障害) かどうか。 */
+    private fun isRetryable5xx(e: Exception): Boolean {
+        val status = (e.message ?: "").substringAfter("HTTP ", "")
+            .substringBefore(":").trim().toIntOrNull()
+        return status != null && status in RETRYABLE_5XX
+    }
+
     /** セグメントを逐次取得し、ID3v2 タグを除去して書き出す。進捗はセグメントごとに通知する。 */
     private suspend fun writeSegments(
         out: OutputStream,
         segments: List<String>,
-        headers: Map<String, String>,
+        tokenRef: TokenRef,
         onProgress: (Float) -> Unit,
         freshTokenProvider: (suspend () -> String?)?,
     ) {
         segments.forEachIndexed { i, segmentUrl ->
-            val bytes = stripId3(fetchSegmentBytes(segmentUrl, headers, freshTokenProvider))
+            val bytes = stripId3(fetchSegmentBytes(segmentUrl, tokenRef, freshTokenProvider))
             out.write(bytes)
             onProgress((i + 1f) / segments.size)
         }

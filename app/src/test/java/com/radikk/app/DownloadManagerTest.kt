@@ -58,14 +58,16 @@ class DownloadManagerTest {
     }
 
     @Test
-    fun `ID3v2 タグのサイズがデータ全体を超える場合はそのまま返る`() {
-        // ヘッダー10B + サイズ (0x7F を 4 バイト) = 巨大 → データより大きい → スキップ不可
+    fun `ID3v2 タグのサイズがデータ全体を超える場合は空配列を返す`() {
+        // ヘッダー10B + サイズ (0x7F を 4 バイト) = 巨大 → データより大きい →
+        // タグ本体が欠落した不完全なセグメント。元データを返すと ID3 が残ったままになり
+        // ADTS フレーミングが壊れるため、空配列を返してセグメントを破棄する。
         val header = byteArrayOf(
             'I'.code.toByte(), 'D'.code.toByte(), '3'.code.toByte(),
             0x04, 0x00, 0x00.toByte(),
             0x7F, 0x7F, 0x7F, 0x7F.toByte(),
         )
         val data = header + byteArrayOf(0xFF.toByte(), 0xF1.toByte())
-        assertArrayEquals(data, DownloadManager.stripId3(data))
+        assertEquals(0, DownloadManager.stripId3(data).size)
     }
 }
