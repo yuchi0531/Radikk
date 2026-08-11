@@ -2,6 +2,7 @@ package com.radikk.app.data.datastore
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.map
  * - エリア選択 (47都道府県)
  * - テーマ (ライト/ダーク/自動 + ダイナミックカラー)
  * - ダウンロード先 (SAF tree Uri 文字列。未設定ならアプリ固有領域)
+ * - 通知 (ダウンロード進捗・完了 / 番組開始リマインダー)
  * - 認証セッション (token / areaId / 有効期限 / device / user)
  */
 private val Context.dataStore by preferencesDataStore(name = "radikk_settings")
@@ -25,6 +27,10 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = true,
     val downloadPath: String? = null,
+    /** ダウンロード進捗・完了通知を表示するか (false でも FGS は継続)。既定 true。 */
+    val downloadNotification: Boolean = true,
+    /** 番組開始通知 (リマインダー) を表示するか。既定 true。 */
+    val reminderNotification: Boolean = true,
 )
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
@@ -45,6 +51,8 @@ class SettingsRepository(private val context: Context) {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = stringPreferencesKey("dynamic_color")
         val DOWNLOAD_PATH = stringPreferencesKey("download_path")
+        val DOWNLOAD_NOTIFICATION = booleanPreferencesKey("download_notification")
+        val REMINDER_NOTIFICATION = booleanPreferencesKey("reminder_notification")
 
         val AUTH_TOKEN = stringPreferencesKey("auth_token")
         val AUTH_AREA_ID = stringPreferencesKey("auth_area_id")
@@ -61,6 +69,8 @@ class SettingsRepository(private val context: Context) {
                 ?: ThemeMode.SYSTEM,
             dynamicColor = p[Keys.DYNAMIC_COLOR]?.toBoolean() ?: true,
             downloadPath = p[Keys.DOWNLOAD_PATH],
+            downloadNotification = p[Keys.DOWNLOAD_NOTIFICATION] ?: true,
+            reminderNotification = p[Keys.REMINDER_NOTIFICATION] ?: true,
         )
     }
 
@@ -78,6 +88,16 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setDownloadPath(path: String) {
         context.dataStore.edit { it[Keys.DOWNLOAD_PATH] = path }
+    }
+
+    /** ダウンロード進捗・完了通知の表示/非表示を設定する。 */
+    suspend fun setDownloadNotification(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.DOWNLOAD_NOTIFICATION] = enabled }
+    }
+
+    /** 番組開始通知 (リマインダー) の表示/非表示を設定する。 */
+    suspend fun setReminderNotification(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.REMINDER_NOTIFICATION] = enabled }
     }
 
     /** 現在の設定を一度だけ読み取る */

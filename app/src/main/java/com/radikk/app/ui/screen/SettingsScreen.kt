@@ -26,6 +26,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -116,6 +117,25 @@ fun SettingsScreen(
             }
             HorizontalDivider()
 
+            // 通知
+            Text(
+                text = "通知",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp),
+            )
+            SwitchRow(
+                title = "ダウンロード通知",
+                checked = settings.downloadNotification,
+                onCheckedChange = { viewModel.setDownloadNotification(it) },
+            )
+            SwitchRow(
+                title = "番組開始通知",
+                checked = settings.reminderNotification,
+                onCheckedChange = { viewModel.setReminderNotification(it) },
+            )
+
+            HorizontalDivider()
+
             // ダウンロード先
             DownloadPathSection(
                 downloadPath = settings.downloadPath,
@@ -168,6 +188,33 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * 設定トグル (タイトル + Switch) の共通行。
+ */
+@Composable
+private fun SwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
     }
 }
 

@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.time.Instant
 
@@ -52,6 +53,13 @@ class DownloadService : Service() {
      */
     private var notificationsEnabled = false
 
+    /**
+     * 設定「ダウンロード通知」が有効かどうか。
+     * false のときは FGS (startForeground) は継続するが、進捗/完了/失敗の
+     * 通知更新 (notifyProgress / notifyCompletion / notifyFailure) をスキップする。
+     */
+    private var showNotifications = true
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -75,7 +83,19 @@ class DownloadService : Service() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
-                val notification = buildProgressNotification("ダウンロード中", 0f, params.programTitle)
+                // 設定「ダウンロード通知」を反映する (通知オフでも FGS は継続する)
+                // onStartCommand は suspend ではないため runBlocking で現在値を一度だけ読む
+                showNotifications = runCatching {
+                    runBlocking {
+                        (application as RadikkApplication).settingsRepository.currentSettings().downloadNotification
+                    }
+                }.getOrDefault(true)
+                val notification = if (showNotifications) {
+                    buildProgressNotification("ダウンロード中", 0f, params.programTitle)
+                } else {
+                    // 通知オフ時も FGS として動作させるため、更新されない最小限の通知を表示する
+                    buildMinimalNotification(params.programTitle)
+                }
                 // Android 13+ で通知権限 (POST_NOTIFICATIONS) が無いと startForeground が
                 // 例外 (NotificationRuntimeException / SecurityException) を投げる。
                 // クラッシュさせずにダウンロード自体は続行し、通知だけ無効化する。
@@ -217,7 +237,7 @@ class DownloadService : Service() {
 
     /** 通知の進捗・タイトルを最新値で更新する。 */
     private fun notifyProgress(title: String, progress: Float) {
-        if (!notificationsEnabled) return
+        if (!notificationsEnabled || !showNotifications) return
         runCatching {
             notificationManager?.notify(
                 NOTIFICATION_ID,
@@ -228,7 +248,7 @@ class DownloadService : Service() {
 
     /** 完了通知 (スワイプで消せる)。 */
     private fun notifyCompletion(message: String) {
-        if (!notificationsEnabled) return
+        if (!notificationsEnabled || !showNotifications) return
         runCatching {
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
@@ -243,7 +263,7 @@ class DownloadService : Service() {
 
     /** 失敗通知 (スワイプで消せる)。 */
     private fun notifyFailure(message: String) {
-        if (!notificationsEnabled) return
+        if (!notificationsEnabled || !showNotifications) return
         runCatching {
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
@@ -254,6 +274,21 @@ class DownloadService : Service() {
                 .build()
             notificationManager?.notify(NOTIFICATION_ID, notification)
         }
+    }
+
+    /**
+     * 通知オフ時に startForeground へ渡す最小限の通知。
+     * Android は FGS に通知を必須とするため、進捗更新なしの固定表示にしておく。
+     */
+    private fun buildMinimalNotification(contentTitle: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("ダウンロード中")
+            .setContentText(contentTitle)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(contentPendingIntent())
+            .build()
     }
 
     private fun contentPendingIntent(): PendingIntent =

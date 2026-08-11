@@ -1060,6 +1060,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { settings.setThemeMode(mode) }
     }
 
+    /** ダウンロード進捗・完了通知の表示/非表示を設定する。 */
+    fun setDownloadNotification(enabled: Boolean) {
+        viewModelScope.launch { settings.setDownloadNotification(enabled) }
+    }
+
+    /** 番組開始通知 (リマインダー) の表示/非表示を設定する。 */
+    fun setReminderNotification(enabled: Boolean) {
+        viewModelScope.launch { settings.setReminderNotification(enabled) }
+    }
+
     /**
      * ダウンロード先を SAF (Storage Access Framework) の tree Uri で設定する。
      *

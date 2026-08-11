@@ -13,8 +13,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.radikk.app.MainActivity
 import com.radikk.app.R
+import com.radikk.app.RadikkApplication
 import com.radikk.app.util.RadikoTimeUtil
 import java.time.Instant
+import kotlinx.coroutines.runBlocking
 
 /**
  * 番組開始通知を表示する BroadcastReceiver。
@@ -29,6 +31,17 @@ class ReminderReceiver : BroadcastReceiver() {
         val startEpochMillis = intent.getLongExtra(EXTRA_START_EPOCH, 0L)
         val endEpochMillis = intent.getLongExtra(EXTRA_END_EPOCH, 0L)
         val reminderId = intent.getStringExtra(EXTRA_REMINDER_ID) ?: return
+
+        // 設定「番組開始通知」がオフの場合は通知を表示しない (アラーム自体は発火する)
+        // onReceive は suspend ではないため runBlocking で現在値を一度だけ読む。
+        // アプリ未起動時にアプリコンテキストへアクセスできない場合も既定 (表示する) に倒す。
+        val reminderEnabled = runCatching {
+            runBlocking {
+                (context.applicationContext as? RadikkApplication)
+                    ?.settingsRepository?.currentSettings()?.reminderNotification
+            }
+        }.getOrNull() ?: true
+        if (!reminderEnabled) return
 
         // Android 13+ で POST_NOTIFICATIONS 未許可の場合は通知を表示できない。
         // 通知権限をリクエストする手段はここ (BroadcastReceiver) にはないため、
