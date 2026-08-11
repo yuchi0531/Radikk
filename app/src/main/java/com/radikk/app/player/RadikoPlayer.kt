@@ -504,11 +504,25 @@ class RadikoPlayer(
     /**
      * メディア通知に表示する番組情報を、次回再生の MediaItem に設定する。
      * リランチ時に nowPlaying を復元できるよう、stationId / isTimefree を extras に保持する。
+     * タイムフリー再生時は ft/to (番組開始・終了のエポックミリ秒) も extras に保持し、
+     * リランチ採用時にシーク用コンテキスト (AppViewModel.timefreeContext) を復元できるようにする。
+     *
+     * @param ftEpochMillis 番組開始時刻 (エポックミリ秒)。0 = タイムフリーではない
+     * @param toEpochMillis 番組終了時刻 (エポックミリ秒)。0 = タイムフリーではない
      */
-    fun setMediaMetadata(title: String, artist: String, stationId: String? = null, isTimefree: Boolean = false) {
+    fun setMediaMetadata(
+        title: String,
+        artist: String,
+        stationId: String? = null,
+        isTimefree: Boolean = false,
+        ftEpochMillis: Long = 0L,
+        toEpochMillis: Long = 0L,
+    ) {
         val extras = Bundle().apply {
             putString("stationId", stationId)
             putBoolean("isTimefree", isTimefree)
+            putLong("ftEpochMillis", ftEpochMillis)
+            putLong("toEpochMillis", toEpochMillis)
         }
         pendingMediaMetadata = MediaMetadata.Builder()
             .setTitle(title)

@@ -208,15 +208,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // リランチ時: バックグラウンド再生を引き継いだ場合は nowPlaying を復元してミニプレイヤーを表示する
-        restoreNowPlayingFromPlayer()
+        viewModelScope.launch {
+            restoreNowPlayingFromPlayer()
+        }
     }
 
     /**
      * リランチ時: バックグラウンド再生を引き継いだ場合 (採用したプレイヤーが再生中)、
      * 現在の MediaItem のメタデータから nowPlaying を復元してミニプレイヤーを表示する。
+     * タイムフリー採用セッションの場合はシーク用コンテキスト (timefreeContext) も復元する。
      * 通常起動時は currentMediaItem が無いため何もしない。
      */
-    private fun restoreNowPlayingFromPlayer() {
+    private suspend fun restoreNowPlayingFromPlayer() {
         if (_nowPlaying.value != null) return
         runCatching {
             val item = radikoPlayer.player.currentMediaItem ?: return@runCatching
@@ -226,12 +229,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val extras = md.extras
             val stationId = extras?.getString("stationId") ?: ""
             val isTimefree = extras?.getBoolean("isTimefree") ?: false
+            val ft = extras?.getLong("ftEpochMillis") ?: 0L
+            val to = extras?.getLong("toEpochMillis") ?: 0L
             _nowPlaying.value = NowPlaying(
                 stationId = stationId,
                 stationName = stationName,
                 title = title,
                 isTimefree = isTimefree,
             )
+            // タイムフリー採用セッションではシーク用コンテキストを復元する。
+            // 5分以上先へのシークは seek パラメータ付きでプレイリストを作り直すため、
+            // timefreeContext (station/ft/to/token) が無いと採用後のシークが効かない。
+            if (isTimefree && ft > 0L && to > ft) {
+                val station = stationRepo.getStations().firstOrNull { it.id == stationId }
+                if (station != null) {
+                    val token = runCatching { auth.getSession(_selectedAreaId.value).token }.getOrNull()
+                    if (token != null) {
+                        timefreeContext = TimefreeSeekContext(
+                            station = station,
+                            ft = Instant.ofEpochMilli(ft),
+                            to = Instant.ofEpochMilli(to),
+                            token = token,
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -558,7 +580,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     to = program.to,
                 )
                 val durationMs = (program.to.toEpochMilli() - program.ft.toEpochMilli()).coerceAtLeast(0L)
-                radikoPlayer.setMediaMetadata(program.title, station.name, station.id, isTimefree = true)
+                radikoPlayer.setMediaMetadata(
+                    program.title,
+                    station.name,
+                    station.id,
+                    isTimefree = true,
+                    ftEpochMillis = program.ft.toEpochMilli(),
+                    toEpochMillis = program.to.toEpochMilli(),
+                )
                 radikoPlayer.playMedialist(medialistUrl, durationOverrideMs = durationMs)
 
                 _nowPlaying.value = NowPlaying(
@@ -832,7 +861,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     to = Instant.ofEpochMilli(cached.toEpochMillis),
                 )
                 val durationMs = (cached.toEpochMillis - cached.ftEpochMillis).coerceAtLeast(0L)
-                radikoPlayer.setMediaMetadata(cached.title, station.name, station.id, isTimefree = true)
+                radikoPlayer.setMediaMetadata(
+                    cached.title,
+                    station.name,
+                    station.id,
+                    isTimefree = true,
+                    ftEpochMillis = cached.ftEpochMillis,
+                    toEpochMillis = cached.toEpochMillis,
+                )
                 radikoPlayer.playMedialist(medialistUrl, durationOverrideMs = durationMs)
 
                 _nowPlaying.value = NowPlaying(
