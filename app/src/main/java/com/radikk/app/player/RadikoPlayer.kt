@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.AudioAttributes
@@ -500,11 +501,19 @@ class RadikoPlayer(
      */
     private var pendingMediaMetadata: MediaMetadata? = null
 
-    /** メディア通知に表示する番組情報を、次回再生の MediaItem に設定する */
-    fun setMediaMetadata(title: String, artist: String) {
+    /**
+     * メディア通知に表示する番組情報を、次回再生の MediaItem に設定する。
+     * リランチ時に nowPlaying を復元できるよう、stationId / isTimefree を extras に保持する。
+     */
+    fun setMediaMetadata(title: String, artist: String, stationId: String? = null, isTimefree: Boolean = false) {
+        val extras = Bundle().apply {
+            putString("stationId", stationId)
+            putBoolean("isTimefree", isTimefree)
+        }
         pendingMediaMetadata = MediaMetadata.Builder()
             .setTitle(title)
             .setArtist(artist)
+            .setExtras(extras)
             .build()
     }
 
