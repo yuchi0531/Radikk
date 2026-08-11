@@ -25,6 +25,8 @@ data class DownloadedProgram(
     val toEpochMillis: Long,
     val filePath: String,
     val downloadedAtEpochMillis: Long,
+    /** ダウンロード済みファイルのサイズ (バイト)。一覧のファイルサイズ表示に使う。 */
+    val fileSizeBytes: Long = 0L,
     /** 番組ロゴ URL。フルプレイヤーで表示 (無ければ局ロゴにフォールバック)。 */
     val imgUrl: String? = null,
     /** 番組の説明文。フルプレイヤーで表示 (ストリーミングのタイムフリーと同じ)。 */

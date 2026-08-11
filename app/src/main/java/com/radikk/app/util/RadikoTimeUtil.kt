@@ -99,4 +99,25 @@ object RadikoTimeUtil {
     /** 現在放送中の番組かを判定する。 */
     fun isOnAir(ft: Instant, to: Instant, now: Instant = Instant.now()): Boolean =
         now >= ft && now < to
+
+    /**
+     * バイト数を B/KB/MB/GB の表示用文字列に変換する (小数1桁)。
+     * 例: 512 → "512 B", 23429120 → "22.3 MB"。0 以下は "0 B"。
+     * ダウンロード一覧のファイルサイズ表示に使う。
+     */
+    fun formatFileSize(bytes: Long): String {
+        if (bytes <= 0) return "0 B"
+        val units = listOf("B", "KB", "MB", "GB")
+        var value = bytes.toDouble()
+        var unitIndex = 0
+        while (value >= 1024 && unitIndex < units.size - 1) {
+            value /= 1024
+            unitIndex++
+        }
+        return if (unitIndex == 0) {
+            "${bytes} ${units[unitIndex]}"
+        } else {
+            String.format(Locale.US, "%.1f %s", value, units[unitIndex])
+        }
+    }
 }

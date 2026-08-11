@@ -40,6 +40,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.radikk.app.data.download.DownloadedProgram
 import com.radikk.app.data.model.Program
 import com.radikk.app.data.model.Station
@@ -115,18 +118,26 @@ fun HomeScreen(
     // エリア内全局の今日分番組表から on-air の番組を抽出する
     // (放送局一覧の「放送中: 〇〇」表示と詳細ダイアログに使う)
     var onAirPrograms by remember { mutableStateOf<Map<String, Program>>(emptyMap()) }
-    LaunchedEffect(stations.map { it.id }.joinToString(",")) {
-        if (stations.isEmpty()) return@LaunchedEffect
-        while (true) {
-            // 一時的な取得失敗でループが死なないように握りつぶす (次回更新で補完)
-            runCatching {
-                val map = viewModel.getProgramsForStations(stations, 0)
-                onAirPrograms = map.entries.flatMap { (sid, progs) ->
-                    progs.filter { it.isOnAir() }.map { sid to it }
-                }.toMap()
+    val onAirStationIds = stations.map { it.id }.joinToString(",")
+    // 画面が RESUMED (タブ表示中・アプリ再開中) の間だけ動くループで、
+    // 番組切替に追従するため 30 秒ごとに再取得する (60秒から短縮)。
+    // repeatOnLifecycle(RESUMED) により「ホームに戻ってきた直後」も即時再取得され、
+    // 番組境界直後に戻ってきた場合の取りこぼし (最大 60 秒の古さ) を防ぐ。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(onAirStationIds, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (stations.isEmpty()) return@repeatOnLifecycle
+            while (true) {
+                // 一時的な取得失敗でループが死なないように握りつぶす (次回更新で補完)
+                runCatching {
+                    val map = viewModel.getProgramsForStations(stations, 0)
+                    onAirPrograms = map.entries.flatMap { (sid, progs) ->
+                        progs.filter { it.isOnAir() }.map { sid to it }
+                    }.toMap()
+                }
+                // 番組切替に追従するため 30 秒ごとに再取得する (画面表示中のみ)
+                delay(30_000)
             }
-            // 番組切替に追従するため 60 秒ごとに再取得する (画面表示中のみ)
-            delay(60_000)
         }
     }
 
@@ -375,6 +386,13 @@ private fun DownloadRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (entry.fileSizeBytes > 0L) {
+                    Text(
+                        text = RadikoTimeUtil.formatFileSize(entry.fileSizeBytes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
         IconButton(onClick = onRemove) {

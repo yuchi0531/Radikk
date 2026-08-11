@@ -178,6 +178,7 @@ class DownloadManager(
         //    ファイル名はファイルシステム上で安全な `${stationId}_${JST14}.aac` を使う
         val fileName = "${stationId}_${RadikoTimeUtil.formatJst14(ft)}.aac"
         val filePath: String
+        var fileSizeBytes = 0L
 
         if (targetTreeUri != null && context != null) {
             // SAF tree Uri 経由 (ユーザー選択フォルダ)
@@ -195,6 +196,10 @@ class DownloadManager(
                 throw mapAuthError(e)
             }
             filePath = doc.uri.toString()
+            // content:// 経由はサイズをリゾルバで問い合わせる (失敗時は 0 = 表示しない)
+            fileSizeBytes = runCatching {
+                context.contentResolver.openAssetFileDescriptor(doc.uri, "r")?.length ?: 0L
+            }.getOrDefault(0L)
         } else {
             // 通常のファイルシステム
             val dir = targetDir ?: throw IOException("ダウンロード先が指定されていません")
@@ -210,6 +215,7 @@ class DownloadManager(
                 throw mapAuthError(e)
             }
             filePath = outputFile.absolutePath
+            fileSizeBytes = outputFile.length()
         }
 
         // 7. リポジトリに登録
@@ -221,6 +227,7 @@ class DownloadManager(
             toEpochMillis = to.toEpochMilli(),
             filePath = filePath,
             downloadedAtEpochMillis = System.currentTimeMillis(),
+            fileSizeBytes = fileSizeBytes,
             imgUrl = imgUrl,
             description = description,
             performer = performer,

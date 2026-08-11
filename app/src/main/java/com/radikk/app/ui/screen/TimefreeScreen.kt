@@ -736,6 +736,13 @@ private fun DownloadedEntryRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (entry.fileSizeBytes > 0L) {
+                    Text(
+                        text = RadikoTimeUtil.formatFileSize(entry.fileSizeBytes),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Text(
                 text = entry.programTitle,
